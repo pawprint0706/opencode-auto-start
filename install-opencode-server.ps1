@@ -74,7 +74,7 @@ function Register-ServerTask {
     Stop-ServerTask -OwnerSid $OwnerSid
 
     $powerShellPath = Join-Path $PSHOME 'powershell.exe'
-    $action = New-ScheduledTaskAction -Execute $powerShellPath -Argument "-NoProfile -ExecutionPolicy Bypass -File `"$ActionPath`""
+    $action = New-ScheduledTaskAction -Execute $powerShellPath -Argument "-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$ActionPath`""
     $trigger = New-ScheduledTaskTrigger -AtLogOn -User $OwnerSid
     $principal = New-ScheduledTaskPrincipal -UserId $OwnerSid -LogonType Interactive -RunLevel Limited
     $settings = New-ScheduledTaskSettingsSet `
