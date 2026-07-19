@@ -16,6 +16,7 @@ $configDir = Join-Path $env:LOCALAPPDATA 'OpenCode'
 $passwordPath = Join-Path $configDir 'server-password.dpapi'
 $binDir = Join-Path $env:LOCALAPPDATA 'OpenCode\bin'
 $wrapperPath = Join-Path $binDir 'opencode-server.ps1'
+$launcherPath = Join-Path $binDir 'opencode-server.vbs'
 $logDir = Join-Path $env:LOCALAPPDATA 'OpenCode\Logs'
 
 function Test-Administrator {
@@ -73,8 +74,9 @@ function Register-ServerTask {
     Import-Module ScheduledTasks
     Stop-ServerTask -OwnerSid $OwnerSid
 
-    $powerShellPath = Join-Path $PSHOME 'powershell.exe'
-    $action = New-ScheduledTaskAction -Execute $powerShellPath -Argument "-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$ActionPath`""
+    # A GUI script host prevents Windows 11 terminal delegation from creating a visible window.
+    $wscriptPath = Join-Path $env:SystemRoot 'System32\wscript.exe'
+    $action = New-ScheduledTaskAction -Execute $wscriptPath -Argument "//B //NoLogo `"$ActionPath`""
     $trigger = New-ScheduledTaskTrigger -AtLogOn -User $OwnerSid
     $principal = New-ScheduledTaskPrincipal -UserId $OwnerSid -LogonType Interactive -RunLevel Limited
     $settings = New-ScheduledTaskSettingsSet `
@@ -242,8 +244,23 @@ catch {
 "@
     [System.IO.File]::WriteAllText($wrapperPath, $wrapper, [System.Text.Encoding]::Unicode)
 
+    $launcher = @'
+Option Explicit
+
+Dim command, exitCode, fileSystem, powerShellPath, scriptPath, shell
+Set fileSystem = CreateObject("Scripting.FileSystemObject")
+Set shell = CreateObject("WScript.Shell")
+
+scriptPath = fileSystem.BuildPath(fileSystem.GetParentFolderName(WScript.ScriptFullName), "opencode-server.ps1")
+powerShellPath = shell.ExpandEnvironmentStrings("%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe")
+command = Chr(34) & powerShellPath & Chr(34) & " -NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -File " & Chr(34) & scriptPath & Chr(34)
+exitCode = shell.Run(command, 0, True)
+WScript.Quit exitCode
+'@
+    [System.IO.File]::WriteAllText($launcherPath, $launcher, [System.Text.Encoding]::ASCII)
+
     $ownerSid = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
-    Invoke-TaskOperation -Operation RegisterTask -OwnerSid $ownerSid -ActionPath $wrapperPath
+    Invoke-TaskOperation -Operation RegisterTask -OwnerSid $ownerSid -ActionPath $launcherPath
 
     Write-Host 'OpenCode server has been installed and started.'
     Write-Host "LAN address: http://$env:COMPUTERNAME`:$port"
@@ -254,7 +271,7 @@ catch {
 function Remove-Service {
     $ownerSid = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
     Invoke-TaskOperation -Operation RemoveTask -OwnerSid $ownerSid -ActionPath ''
-    Remove-Item -Force -ErrorAction SilentlyContinue $wrapperPath, $passwordPath
+    Remove-Item -Force -ErrorAction SilentlyContinue $wrapperPath, $launcherPath, $passwordPath
     Write-Host 'OpenCode server automatic startup has been removed.'
     return $true
 }
