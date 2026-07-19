@@ -24,7 +24,7 @@ Finder에서 `install-opencode-server.command`를 더블클릭합니다.
 
 ## Windows
 
-Explorer에서 `install-opencode-server.bat`를 더블클릭합니다.
+Explorer에서 `install-opencode-server.bat`를 더블클릭합니다. 작업 스케줄러 변경에 관리자 권한이 필요한 경우에만 UAC 승인 창이 표시됩니다.
 
 1. `1`을 선택해 설치 또는 재설치를 진행합니다.
 2. 포트와 서버 비밀번호를 입력합니다.
@@ -34,6 +34,8 @@ Explorer에서 `install-opencode-server.bat`를 더블클릭합니다.
 
 - 비밀번호: `%LOCALAPPDATA%\OpenCode\server-password.dpapi`
 - 로그: `%LOCALAPPDATA%\OpenCode\Logs\`
+
+예약 작업은 현재 사용자 로그온에만 실행되며, 배터리 사용 여부와 관계없이 계속 실행됩니다. 서버가 비정상 종료되면 작업 스케줄러가 최대 3회 다시 시작합니다.
 
 ## 접속 및 보안
 
