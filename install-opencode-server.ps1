@@ -41,6 +41,21 @@ function Test-TaskOwner {
     return $principalSid -eq $OwnerSid
 }
 
+function Stop-ServerProcesses {
+    $wrapperPattern = '(?i)(?:^|\s)-File\s+(?:"{0}"|{0})(?:\s|$)' -f [regex]::Escape($wrapperPath)
+    $processes = Get-CimInstance Win32_Process -Filter "Name = 'powershell.exe'" | Where-Object {
+        $_.CommandLine -match $wrapperPattern
+    }
+
+    $taskkillPath = Join-Path $env:SystemRoot 'System32\taskkill.exe'
+    foreach ($process in $processes) {
+        & $taskkillPath /PID $process.ProcessId /T /F 2>&1 | Out-Null
+        if ($LASTEXITCODE -ne 0 -and (Get-Process -Id $process.ProcessId -ErrorAction SilentlyContinue)) {
+            throw "The OpenCode server process $($process.ProcessId) did not stop."
+        }
+    }
+}
+
 function Stop-ServerTask {
     param([string]$OwnerSid)
 
@@ -58,11 +73,16 @@ function Stop-ServerTask {
             Start-Sleep -Milliseconds 250
             $task = Get-ScheduledTask -TaskName $taskName
             if ($task.State -ne 'Running') {
-                return
+                break
             }
         }
-        throw "The scheduled task '$taskName' did not stop."
+        if ($task.State -eq 'Running') {
+            throw "The scheduled task '$taskName' did not stop."
+        }
     }
+
+    # Stopping the WScript task does not terminate the PowerShell/OpenCode child processes.
+    Stop-ServerProcesses
 }
 
 function Register-ServerTask {
