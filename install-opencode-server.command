@@ -105,16 +105,47 @@ remove_service() {
   print "OpenCode 서버 자동 실행을 삭제했습니다."
 }
 
+restart_service() {
+  local attempt service_info pid
+
+  if [[ ! -f "$PLIST_PATH" ]]; then
+    print "OpenCode 서버가 설치되어 있지 않습니다. 먼저 설치하세요."
+    return 1
+  fi
+
+  launchctl kickstart -k "$SERVICE_TARGET"
+  for attempt in {1..20}; do
+    service_info="$(launchctl print "$SERVICE_TARGET" 2>/dev/null || true)"
+    if [[ "$service_info" == *"state = running"* ]]; then
+      pid="확인할 수 없음"
+      if [[ "$service_info" =~ 'pid = ([0-9]+)' ]]; then
+        pid="$match[1]"
+      fi
+      print "OpenCode 서버를 재시작했습니다."
+      print "상태: 실행 중 (PID: $pid)"
+      return 0
+    fi
+    sleep 0.25
+  done
+
+  print "OpenCode 서버가 재시작 후 정상 실행 상태가 아닙니다."
+  print "상태: 실행 중이 아님"
+  print "오류 로그: $LOG_DIR/opencode-server.err.log"
+  return 1
+}
+
 clear
 print "OpenCode 서버 자동 실행 관리"
 print "1) 설치 또는 다시 설치"
 print "2) 삭제"
-print -n "선택 [1/2]: "
+print "3) 재시작"
+print -n "선택 [1/2/3]: "
 read -r action
 
 case "$action" in
   1) install_service ;;
   2) remove_service ;;
+  3) restart_service ;;
   *) print "올바른 번호를 선택하세요."; exit 1 ;;
 esac
 

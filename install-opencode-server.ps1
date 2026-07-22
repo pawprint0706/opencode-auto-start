@@ -276,6 +276,38 @@ function Remove-Service {
     return $true
 }
 
+function Restart-Service {
+    Import-Module ScheduledTasks
+    $ownerSid = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+    $task = Get-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue
+    if ($null -eq $task) {
+        Write-Host 'OpenCode server is not installed. Install it first.'
+        return $false
+    }
+    if (-not (Test-TaskOwner -Task $task -OwnerSid $ownerSid)) {
+        throw [InvalidOperationException]::new("The scheduled task '$taskName' belongs to another user.")
+    }
+
+    Stop-ServerTask -OwnerSid $ownerSid
+    Start-ScheduledTask -TaskName $taskName
+    Start-Sleep -Seconds 2
+
+    $runningTask = Get-ScheduledTask -TaskName $taskName
+    $taskInfo = Get-ScheduledTaskInfo -TaskName $taskName
+    if ($runningTask.State -ne 'Running') {
+        Write-Host 'The OpenCode server is not running after restart.'
+        Write-Host "Status: $($runningTask.State)"
+        Write-Host ('Last task result: 0x{0:X8}' -f $taskInfo.LastTaskResult)
+        Write-Host "Error log: $(Join-Path $logDir 'opencode-server.err.log')"
+        return $false
+    }
+    Write-Host 'OpenCode server has been restarted.'
+    Write-Host "Status: $($runningTask.State)"
+    Write-Host "Last started: $($taskInfo.LastRunTime)"
+    Write-Host "Logs: $logDir"
+    return $true
+}
+
 try {
     if ($Mode -eq 'RegisterTask') {
         if ([string]::IsNullOrWhiteSpace($TaskOwnerSid) -or [string]::IsNullOrWhiteSpace($TaskActionPath)) {
@@ -296,7 +328,8 @@ try {
     Write-Host 'OpenCode Server Automatic Startup'
     Write-Host '1) Install or reinstall'
     Write-Host '2) Remove'
-    $action = Read-Host 'Select [1/2]'
+    Write-Host '3) Restart'
+    $action = Read-Host 'Select [1/2/3]'
 
     $succeeded = switch ($action) {
         '1' { Install-Service }
@@ -310,8 +343,9 @@ try {
                 $true
             }
         }
+        '3' { Restart-Service }
         default {
-            Write-Host 'Select 1 or 2.'
+            Write-Host 'Select 1, 2 or 3.'
             $false
         }
     }
