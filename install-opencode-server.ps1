@@ -1,4 +1,4 @@
-# Run directly in PowerShell, or through install-opencode-server.bat.
+﻿# Run directly in PowerShell, or through install-opencode-server.bat.
 
 [CmdletBinding()]
 param(
@@ -12,12 +12,21 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
 $taskName = 'OpenCode Server'
+$contextMenuName = 'OpenCode'
+# Built from code points so the label stays correct even if the script encoding is misdetected.
+$contextMenuLabel = -join @('OpenCode', [char]0xC5D0, [char]0xC11C, ' ', [char]0xC5F4, [char]0xAE30)
 $configDir = Join-Path $env:LOCALAPPDATA 'OpenCode'
 $passwordPath = Join-Path $configDir 'server-password.dpapi'
 $binDir = Join-Path $env:LOCALAPPDATA 'OpenCode\bin'
 $wrapperPath = Join-Path $binDir 'opencode-server.ps1'
 $launcherPath = Join-Path $binDir 'opencode-server.vbs'
+$attachPath = Join-Path $binDir 'opencode-attach.ps1'
 $logDir = Join-Path $env:LOCALAPPDATA 'OpenCode\Logs'
+$contextMenuRoots = @(
+    'HKCU:\Software\Classes\Directory\Background\shell',
+    'HKCU:\Software\Classes\Directory\shell',
+    'HKCU:\Software\Classes\Drive\shell'
+)
 
 function Test-Administrator {
     $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
@@ -187,6 +196,68 @@ function Invoke-TaskOperation {
     }
 }
 
+function Resolve-OpenCodeExePath {
+    param([string]$CommandPath)
+
+    if ($CommandPath -match '(?i)\.exe$') {
+        return $CommandPath
+    }
+
+    $npmDir = Split-Path -Parent $CommandPath
+    $candidate = Join-Path $npmDir 'node_modules\opencode-ai\bin\opencode.exe'
+    if (Test-Path -LiteralPath $candidate) {
+        return $candidate
+    }
+    return $CommandPath
+}
+
+function Register-ContextMenu {
+    param(
+        [string]$AttachScriptPath,
+        [string]$IconPath
+    )
+
+    $powerShellPath = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
+    $useWindowsTerminal = $null -ne (Get-Command wt.exe -ErrorAction SilentlyContinue)
+
+    $entries = @(
+        @{ Root = 'HKCU:\Software\Classes\Directory\Background\shell'; Target = '%V' },
+        @{ Root = 'HKCU:\Software\Classes\Directory\shell'; Target = '%1' },
+        @{ Root = 'HKCU:\Software\Classes\Drive\shell'; Target = '%1' }
+    )
+
+    foreach ($entry in $entries) {
+        $menuKey = Join-Path $entry.Root $contextMenuName
+        $commandKey = Join-Path $menuKey 'command'
+        New-Item -Path $menuKey -Force | Out-Null
+        Set-ItemProperty -LiteralPath $menuKey -Name '(default)' -Value $contextMenuLabel
+        if (-not [string]::IsNullOrWhiteSpace($IconPath)) {
+            Set-ItemProperty -LiteralPath $menuKey -Name 'Icon' -Value $IconPath
+        }
+
+        if ($useWindowsTerminal) {
+            $command = 'wt.exe -d "{0}" "{1}" -NoProfile -ExecutionPolicy Bypass -File "{2}" -Dir "{0}"' -f `
+                $entry.Target, $powerShellPath, $AttachScriptPath
+        }
+        else {
+            $command = '"{0}" -NoExit -NoProfile -ExecutionPolicy Bypass -File "{1}" -Dir "{2}"' -f `
+                $powerShellPath, $AttachScriptPath, $entry.Target
+        }
+
+        New-Item -Path $commandKey -Force | Out-Null
+        Set-ItemProperty -LiteralPath $commandKey -Name '(default)' -Value $command
+    }
+}
+
+function Remove-ContextMenu {
+    foreach ($root in $contextMenuRoots) {
+        $menuKey = Join-Path $root $contextMenuName
+        if (Test-Path -LiteralPath $menuKey) {
+            Remove-Item -LiteralPath $menuKey -Recurse -Force
+        }
+    }
+}
+
 function Install-Service {
     $opencode = Get-Command opencode -CommandType Application, ExternalScript -ErrorAction SilentlyContinue |
         Select-Object -First 1
@@ -279,11 +350,60 @@ WScript.Quit exitCode
 '@
     [System.IO.File]::WriteAllText($launcherPath, $launcher, [System.Text.Encoding]::ASCII)
 
+    $attach = @"
+param(
+    [Parameter(Mandatory = `$true)]
+    [string]`$Dir
+)
+
+`$ErrorActionPreference = 'Stop'
+`$passwordFile = '$escapedPasswordPath'
+`$opencodePath = '$opencodePath'
+`$serverUrl = 'http://127.0.0.1:$port'
+
+try {
+    if (-not (Test-Path -LiteralPath `$Dir)) {
+        throw "Directory not found: `$Dir"
+    }
+    if (-not (Test-Path -LiteralPath `$passwordFile)) {
+        throw 'OpenCode server password file is missing. Run the installer first.'
+    }
+    if (-not (Test-Path -LiteralPath `$opencodePath)) {
+        throw "OpenCode CLI was not found: `$opencodePath"
+    }
+
+    `$securePassword = ConvertTo-SecureString (Get-Content -LiteralPath `$passwordFile -Raw)
+    `$passwordBstr = [Runtime.InteropServices.Marshal]::SecureStringToBSTR(`$securePassword)
+    try {
+        `$env:OPENCODE_SERVER_PASSWORD = [Runtime.InteropServices.Marshal]::PtrToStringBSTR(`$passwordBstr)
+        Set-Location -LiteralPath `$Dir
+        & `$opencodePath attach `$serverUrl --dir `$Dir
+        exit `$LASTEXITCODE
+    }
+    finally {
+        if (`$passwordBstr -ne [IntPtr]::Zero) {
+            [Runtime.InteropServices.Marshal]::ZeroFreeBSTR(`$passwordBstr)
+        }
+        Remove-Item Env:OPENCODE_SERVER_PASSWORD -ErrorAction SilentlyContinue
+    }
+}
+catch {
+    [Console]::Error.WriteLine(`$_.Exception.Message)
+    Read-Host 'Press Enter to close'
+    exit 1
+}
+"@
+    [System.IO.File]::WriteAllText($attachPath, $attach, [System.Text.Encoding]::Unicode)
+
     $ownerSid = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
     Invoke-TaskOperation -Operation RegisterTask -OwnerSid $ownerSid -ActionPath $launcherPath
 
+    $iconPath = Resolve-OpenCodeExePath -CommandPath $opencode.Path
+    Register-ContextMenu -AttachScriptPath $attachPath -IconPath $iconPath
+
     Write-Host 'OpenCode server has been installed and started.'
     Write-Host "LAN address: http://$env:COMPUTERNAME`:$port"
+    Write-Host "Explorer menu: $contextMenuLabel (attaches to http://127.0.0.1:$port)"
     Write-Host "Logs: $logDir"
     return $true
 }
@@ -291,8 +411,9 @@ WScript.Quit exitCode
 function Remove-Service {
     $ownerSid = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
     Invoke-TaskOperation -Operation RemoveTask -OwnerSid $ownerSid -ActionPath ''
-    Remove-Item -Force -ErrorAction SilentlyContinue $wrapperPath, $launcherPath, $passwordPath
-    Write-Host 'OpenCode server automatic startup has been removed.'
+    Remove-ContextMenu
+    Remove-Item -Force -ErrorAction SilentlyContinue $wrapperPath, $launcherPath, $attachPath, $passwordPath
+    Write-Host 'OpenCode server automatic startup and Explorer context menu have been removed.'
     return $true
 }
 
@@ -354,7 +475,7 @@ try {
     $succeeded = switch ($action) {
         '1' { Install-Service }
         '2' {
-            $confirm = Read-Host 'Delete the startup task, wrapper, and saved password? [y/N]'
+            $confirm = Read-Host 'Delete the startup task, Explorer menu, wrapper, and saved password? [y/N]'
             if ($confirm -match '^(?i:y|yes)$') {
                 Remove-Service
             }
