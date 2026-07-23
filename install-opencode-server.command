@@ -19,7 +19,27 @@ QUICK_ACTION_PATH="$SERVICES_DIR/$QUICK_ACTION_NAME.workflow"
 SERVICE_TARGET="gui/$UID/$LABEL"
 
 cleanup_service() {
+  local attempt
+
   launchctl bootout "$SERVICE_TARGET" 2>/dev/null || true
+  for attempt in {1..20}; do
+    launchctl print "$SERVICE_TARGET" >/dev/null 2>&1 || return 0
+    sleep 0.1
+  done
+}
+
+bootstrap_service() {
+  local attempt bootstrap_error
+
+  for attempt in {1..20}; do
+    if bootstrap_error="$(launchctl bootstrap "gui/$UID" "$PLIST_PATH" 2>&1)"; then
+      return 0
+    fi
+    sleep 0.25
+  done
+
+  print -u2 "$bootstrap_error"
+  return 1
 }
 
 install_quick_action() {
@@ -175,7 +195,7 @@ WFLOW
 }
 
 install_service() {
-  local opencode_bin port password confirm
+  local opencode_bin login_path_output login_path line service_path port password confirm
 
   opencode_bin="$(command -v opencode || true)"
   if [[ -z "$opencode_bin" ]]; then
@@ -184,6 +204,14 @@ install_service() {
     print "  npm:      npm install -g opencode-ai"
     return 1
   fi
+
+  login_path_output="$(/bin/zsh -lic 'print -r -- "__OPENCODE_PATH__$PATH"' 2>/dev/null || true)"
+  for line in ${(f)login_path_output}; do
+    if [[ "$line" == __OPENCODE_PATH__* ]]; then
+      login_path="${line#__OPENCODE_PATH__}"
+    fi
+  done
+  service_path="${login_path:+$login_path:}$PATH:$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
 
   print -n "서버 포트 [4096]: "
   read -r port
@@ -196,6 +224,7 @@ install_service() {
   if [[ -f "$PASSWORD_PATH" ]]; then
     print -n "기존 서버 비밀번호를 유지할까요? [Y/n]: "
     read -r confirm
+    confirm="${confirm:-y}"
   else
     confirm="n"
   fi
@@ -217,6 +246,7 @@ install_service() {
   mkdir -p "$LAUNCH_AGENTS_DIR" "$BIN_DIR" "$LOG_DIR" "$SERVICES_DIR"
 
   printf '%s\n' '#!/bin/zsh' 'set -euo pipefail' \
+    "export PATH=${(q)service_path}" \
     'password_file="$HOME/.config/opencode/server-password"' \
     '[[ -r "$password_file" ]] || { print -u2 "OpenCode server password file is missing."; exit 1; }' \
     'export OPENCODE_SERVER_PASSWORD="$(< "$password_file")"' \
@@ -280,12 +310,12 @@ LAUNCHER
 
   plutil -lint "$PLIST_PATH" >/dev/null
   cleanup_service
-  launchctl bootstrap "gui/$UID" "$PLIST_PATH"
+  bootstrap_service
   launchctl kickstart -k "$SERVICE_TARGET"
 
   print "OpenCode 서버를 설치하고 시작했습니다."
   print "LAN 주소: http://$(scutil --get LocalHostName 2>/dev/null || hostname).local:$port"
-  print "Finder 빠른 동작: $QUICK_ACTION_NAME (http://127.0.0.1:$port에 attach)"
+  print "Finder 빠른 동작: $QUICK_ACTION_NAME (http://127.0.0.1:${port}에 attach)"
   print "상태 확인: launchctl print $SERVICE_TARGET"
 }
 

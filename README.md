@@ -28,6 +28,8 @@ Finder에서 `install-opencode-server.command`를 더블클릭합니다.
 
 Finder 빠른 동작은 선택한 폴더에서 기본 `Terminal.app`을 열어 attach를 실행합니다. 처음 사용할 때 macOS가 Terminal 제어 권한을 요청할 수 있습니다. 메뉴가 보이지 않으면 **시스템 설정 > 일반 > 로그인 항목 및 확장 프로그램 > Finder**에서 빠른 동작이 활성화되어 있는지 확인하세요.
 
+설치 시 현재 Terminal의 `PATH`를 서버 래퍼에 저장하므로, `npx`로 실행되는 MCP도 `launchd` 환경에서 찾을 수 있습니다. Node.js 버전 관리자 변경 등으로 실행 파일 경로가 바뀌면 설치 메뉴에서 `1`을 선택해 다시 설치하세요.
+
 ## Windows
 
 Explorer에서 `install-opencode-server.bat`를 더블클릭합니다. 작업 스케줄러 변경에 관리자 권한이 필요한 경우에만 UAC 승인 창이 표시됩니다.
