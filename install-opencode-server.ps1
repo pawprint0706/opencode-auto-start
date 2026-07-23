@@ -17,6 +17,8 @@ $contextMenuName = 'OpenCode'
 $contextMenuLabel = -join @('OpenCode', [char]0xC5D0, [char]0xC11C, ' ', [char]0xC5F4, [char]0xAE30)
 $configDir = Join-Path $env:LOCALAPPDATA 'OpenCode'
 $passwordPath = Join-Path $configDir 'server-password.dpapi'
+$iconSourcePath = Join-Path $PSScriptRoot 'icon.ico'
+$contextMenuIconPath = Join-Path $configDir 'icon.ico'
 $binDir = Join-Path $env:LOCALAPPDATA 'OpenCode\bin'
 $wrapperPath = Join-Path $binDir 'opencode-server.ps1'
 $launcherPath = Join-Path $binDir 'opencode-server.vbs'
@@ -196,21 +198,6 @@ function Invoke-TaskOperation {
     }
 }
 
-function Resolve-OpenCodeExePath {
-    param([string]$CommandPath)
-
-    if ($CommandPath -match '(?i)\.exe$') {
-        return $CommandPath
-    }
-
-    $npmDir = Split-Path -Parent $CommandPath
-    $candidate = Join-Path $npmDir 'node_modules\opencode-ai\bin\opencode.exe'
-    if (Test-Path -LiteralPath $candidate) {
-        return $candidate
-    }
-    return $CommandPath
-}
-
 function Register-ContextMenu {
     param(
         [string]$AttachScriptPath,
@@ -266,6 +253,10 @@ function Install-Service {
         Write-Host '  npm: npm install -g opencode-ai'
         return $false
     }
+    if (-not (Test-Path -LiteralPath $iconSourcePath -PathType Leaf)) {
+        Write-Host "OpenCode context menu icon was not found: $iconSourcePath"
+        return $false
+    }
 
     $portText = Read-Host 'Server port [4096]'
     $port = if ([string]::IsNullOrWhiteSpace($portText)) { 4096 } else { 0 }
@@ -296,7 +287,8 @@ function Install-Service {
         )
     }
 
-    New-Item -ItemType Directory -Force $binDir, $logDir | Out-Null
+    New-Item -ItemType Directory -Force $configDir, $binDir, $logDir | Out-Null
+    Copy-Item -LiteralPath $iconSourcePath -Destination $contextMenuIconPath -Force
     $opencodePath = $opencode.Path.Replace("'", "''")
     $escapedPasswordPath = $passwordPath.Replace("'", "''")
     $escapedOutLog = (Join-Path $logDir 'opencode-server.out.log').Replace("'", "''")
@@ -398,8 +390,7 @@ catch {
     $ownerSid = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
     Invoke-TaskOperation -Operation RegisterTask -OwnerSid $ownerSid -ActionPath $launcherPath
 
-    $iconPath = Resolve-OpenCodeExePath -CommandPath $opencode.Path
-    Register-ContextMenu -AttachScriptPath $attachPath -IconPath $iconPath
+    Register-ContextMenu -AttachScriptPath $attachPath -IconPath $contextMenuIconPath
 
     Write-Host 'OpenCode server has been installed and started.'
     Write-Host "LAN address: http://$env:COMPUTERNAME`:$port"
@@ -412,7 +403,8 @@ function Remove-Service {
     $ownerSid = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
     Invoke-TaskOperation -Operation RemoveTask -OwnerSid $ownerSid -ActionPath ''
     Remove-ContextMenu
-    Remove-Item -Force -ErrorAction SilentlyContinue $wrapperPath, $launcherPath, $attachPath, $passwordPath
+    Remove-Item -Force -ErrorAction SilentlyContinue `
+        $wrapperPath, $launcherPath, $attachPath, $passwordPath, $contextMenuIconPath
     Write-Host 'OpenCode server automatic startup and Explorer context menu have been removed.'
     return $true
 }
