@@ -1,6 +1,6 @@
 # OpenCode Server Auto Start
 
-macOS와 Windows에서 OpenCode HTTP 서버를 로그인 시 자동으로 시작하도록 등록하는 스크립트입니다. Windows에서는 탐색기 우클릭 **OpenCode에서 열기** 메뉴도 함께 등록되어, 실행 중인 서버에 `attach`로 연결합니다. 서버는 사용자 홈 폴더를 작업 디렉터리로 사용하며 기본 포트는 `4096`입니다.
+macOS와 Windows에서 OpenCode HTTP 서버를 로그인 시 자동으로 시작하도록 등록하는 스크립트입니다. Finder 또는 탐색기의 폴더 우클릭 **OpenCode에서 열기** 메뉴도 함께 등록되어, 실행 중인 서버에 `attach`로 연결합니다. 서버는 사용자 홈 폴더를 작업 디렉터리로 사용하며 기본 포트는 `4096`입니다.
 
 ## 요구 사항
 
@@ -15,12 +15,18 @@ Finder에서 `install-opencode-server.command`를 더블클릭합니다.
 1. `1`을 선택해 설치 또는 재설치를 진행합니다.
 2. 포트와 서버 비밀번호를 입력합니다.
 3. 로그인 시 `launchd`가 OpenCode 서버를 자동 시작합니다.
+4. Finder에서 폴더를 우클릭한 뒤 **빠른 동작** 또는 **서비스**의 **OpenCode에서 열기**를 선택하면 Terminal에서 실행 중인 서버(`http://127.0.0.1:<포트>`)에 `attach`로 연결됩니다.
 
-삭제하려면 같은 파일을 실행한 뒤 `2`를, 재시작하려면 `3`을 선택합니다.
+삭제하려면 같은 파일을 실행한 뒤 `2`를, 재시작하려면 `3`을 선택합니다. 삭제 시 LaunchAgent·Finder 빠른 동작·래퍼·저장 비밀번호가 함께 제거됩니다.
 
 - 서비스: `com.anomalyco.opencode-server`
 - 비밀번호: `~/.config/opencode/server-password`
+- 서버 래퍼: `~/.local/bin/opencode-server`
+- attach 래퍼: `~/.local/bin/opencode-attach`
+- Finder 빠른 동작: `~/Library/Services/OpenCode에서 열기.workflow`
 - 로그: `~/Library/Logs/OpenCode/`
+
+Finder 빠른 동작은 선택한 폴더에서 기본 `Terminal.app`을 열어 attach를 실행합니다. 처음 사용할 때 macOS가 Terminal 제어 권한을 요청할 수 있습니다. 메뉴가 보이지 않으면 **시스템 설정 > 일반 > 로그인 항목 및 확장 프로그램 > Finder**에서 빠른 동작이 활성화되어 있는지 확인하세요.
 
 ## Windows
 

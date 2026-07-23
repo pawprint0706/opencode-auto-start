@@ -8,13 +8,170 @@ LAUNCH_AGENTS_DIR="$HOME/Library/LaunchAgents"
 PLIST_PATH="$LAUNCH_AGENTS_DIR/$LABEL.plist"
 BIN_DIR="$HOME/.local/bin"
 WRAPPER_PATH="$BIN_DIR/opencode-server"
+ATTACH_PATH="$BIN_DIR/opencode-attach"
+ATTACH_LAUNCHER_PATH="$BIN_DIR/opencode-attach-launcher"
 CONFIG_DIR="$HOME/.config/opencode"
 PASSWORD_PATH="$CONFIG_DIR/server-password"
 LOG_DIR="$HOME/Library/Logs/OpenCode"
+SERVICES_DIR="$HOME/Library/Services"
+QUICK_ACTION_NAME="OpenCode에서 열기"
+QUICK_ACTION_PATH="$SERVICES_DIR/$QUICK_ACTION_NAME.workflow"
 SERVICE_TARGET="gui/$UID/$LABEL"
 
 cleanup_service() {
   launchctl bootout "$SERVICE_TARGET" 2>/dev/null || true
+}
+
+install_quick_action() {
+  rm -rf "$QUICK_ACTION_PATH"
+  mkdir -p "$QUICK_ACTION_PATH/Contents"
+
+  cat > "$QUICK_ACTION_PATH/Contents/Info.plist" <<'PLIST'
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>CFBundleIdentifier</key>
+  <string>com.anomalyco.opencode-attach.quickaction</string>
+  <key>CFBundleName</key>
+  <string>OpenCode에서 열기</string>
+  <key>NSServices</key>
+  <array>
+    <dict>
+      <key>NSMenuItem</key>
+      <dict>
+        <key>default</key>
+        <string>OpenCode에서 열기</string>
+      </dict>
+      <key>NSMessage</key>
+      <string>runWorkflowAsService</string>
+      <key>NSRequiredContext</key>
+      <dict>
+        <key>NSApplicationIdentifier</key>
+        <string>com.apple.finder</string>
+      </dict>
+      <key>NSSendFileTypes</key>
+      <array>
+        <string>public.folder</string>
+      </array>
+    </dict>
+  </array>
+</dict>
+</plist>
+PLIST
+
+  cat > "$QUICK_ACTION_PATH/Contents/document.wflow" <<'WFLOW'
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>AMApplicationBuild</key>
+  <string>523</string>
+  <key>AMApplicationVersion</key>
+  <string>2.10</string>
+  <key>AMDocumentVersion</key>
+  <string>2</string>
+  <key>actions</key>
+  <array>
+    <dict>
+      <key>action</key>
+      <dict>
+        <key>AMAccepts</key>
+        <dict>
+          <key>Container</key>
+          <string>List</string>
+          <key>Optional</key>
+          <true/>
+          <key>Types</key>
+          <array>
+            <string>com.apple.cocoa.path</string>
+          </array>
+        </dict>
+        <key>AMActionVersion</key>
+        <string>2.0.3</string>
+        <key>AMApplication</key>
+        <array>
+          <string>Automator</string>
+        </array>
+        <key>AMCategory</key>
+        <string>AMCategoryUtilities</string>
+        <key>AMName</key>
+        <string>Run Shell Script</string>
+        <key>AMProvides</key>
+        <dict>
+          <key>Container</key>
+          <string>List</string>
+          <key>Types</key>
+          <array>
+            <string>com.apple.cocoa.path</string>
+          </array>
+        </dict>
+        <key>ActionBundlePath</key>
+        <string>/System/Library/Automator/Run Shell Script.action</string>
+        <key>ActionName</key>
+        <string>Run Shell Script</string>
+        <key>ActionParameters</key>
+        <dict>
+          <key>COMMAND_STRING</key>
+          <string>"$HOME/.local/bin/opencode-attach-launcher" "$@"</string>
+          <key>CheckedForUserDefaultShell</key>
+          <true/>
+          <key>inputMethod</key>
+          <integer>1</integer>
+          <key>shell</key>
+          <string>/bin/zsh</string>
+          <key>source</key>
+          <string></string>
+        </dict>
+        <key>BundleIdentifier</key>
+        <string>com.apple.Automator.RunShellScript</string>
+        <key>CFBundleVersion</key>
+        <string>2.0.3</string>
+        <key>CanShowSelectedItemsWhenRun</key>
+        <false/>
+        <key>CanShowWhenRun</key>
+        <true/>
+        <key>Category</key>
+        <array>
+          <string>AMCategoryUtilities</string>
+        </array>
+        <key>Class Name</key>
+        <string>RunShellScriptAction</string>
+        <key>InputUUID</key>
+        <string>9B7304B6-2CD1-42E2-A20A-28022602E5CC</string>
+        <key>OutputUUID</key>
+        <string>7D50F2E3-63F6-4AC4-B889-2CF1B7B4DBAB</string>
+        <key>UUID</key>
+        <string>56361D08-EBF8-4A58-A297-DB44D5D8B058</string>
+      </dict>
+    </dict>
+  </array>
+  <key>connectors</key>
+  <dict/>
+  <key>workflowMetaData</key>
+  <dict>
+    <key>inputTypeIdentifier</key>
+    <string>com.apple.Automator.fileSystemObject</string>
+    <key>outputTypeIdentifier</key>
+    <string>com.apple.Automator.nothing</string>
+    <key>serviceApplicationBundleID</key>
+    <string>com.apple.finder</string>
+    <key>serviceInputTypeIdentifier</key>
+    <string>com.apple.Automator.fileSystemObject</string>
+    <key>serviceOutputTypeIdentifier</key>
+    <string>com.apple.Automator.nothing</string>
+    <key>workflowTypeIdentifier</key>
+    <string>com.apple.Automator.servicesMenu</string>
+  </dict>
+</dict>
+</plist>
+WFLOW
+
+  plutil -lint "$QUICK_ACTION_PATH/Contents/Info.plist" >/dev/null
+  plutil -lint "$QUICK_ACTION_PATH/Contents/document.wflow" >/dev/null
+  if [[ -x /System/Library/CoreServices/pbs ]]; then
+    /System/Library/CoreServices/pbs -flush 2>/dev/null || true
+  fi
 }
 
 install_service() {
@@ -57,7 +214,7 @@ install_service() {
     chmod 600 "$PASSWORD_PATH"
   fi
 
-  mkdir -p "$LAUNCH_AGENTS_DIR" "$BIN_DIR" "$LOG_DIR"
+  mkdir -p "$LAUNCH_AGENTS_DIR" "$BIN_DIR" "$LOG_DIR" "$SERVICES_DIR"
 
   printf '%s\n' '#!/bin/zsh' 'set -euo pipefail' \
     'password_file="$HOME/.config/opencode/server-password"' \
@@ -65,6 +222,46 @@ install_service() {
     'export OPENCODE_SERVER_PASSWORD="$(< "$password_file")"' \
     "exec ${(q)opencode_bin} serve --hostname 0.0.0.0 --port ${(q)port}" > "$WRAPPER_PATH"
   chmod 700 "$WRAPPER_PATH"
+
+  printf '%s\n' '#!/bin/zsh' 'set -euo pipefail' \
+    'target_dir="${1:-}"' \
+    'password_file="$HOME/.config/opencode/server-password"' \
+    "opencode_bin=${(q)opencode_bin}" \
+    "server_url=http://127.0.0.1:${(q)port}" \
+    '[[ -n "$target_dir" && -d "$target_dir" ]] || { print -u2 "OpenCode attach directory is missing or invalid: $target_dir"; exit 1; }' \
+    '[[ -r "$password_file" ]] || { print -u2 "OpenCode server password file is missing. Run the installer first."; exit 1; }' \
+    '[[ -x "$opencode_bin" ]] || { print -u2 "OpenCode CLI was not found: $opencode_bin"; exit 1; }' \
+    'export OPENCODE_SERVER_PASSWORD="$(< "$password_file")"' \
+    'cd "$target_dir"' \
+    'exec "$opencode_bin" attach "$server_url" --dir "$target_dir"' > "$ATTACH_PATH"
+  chmod 700 "$ATTACH_PATH"
+
+  cat > "$ATTACH_LAUNCHER_PATH" <<'LAUNCHER'
+#!/bin/zsh
+set -euo pipefail
+
+attach_path="$HOME/.local/bin/opencode-attach"
+(( $# > 0 )) || exit 0
+
+for target_dir in "$@"; do
+  [[ -d "$target_dir" ]] || continue
+  /usr/bin/osascript - "$attach_path" "$target_dir" <<'APPLESCRIPT'
+on run argv
+  set attachPath to item 1 of argv
+  set targetDir to item 2 of argv
+  set commandText to quoted form of attachPath & space & quoted form of targetDir
+
+  tell application "Terminal"
+    activate
+    do script commandText
+  end tell
+end run
+APPLESCRIPT
+done
+LAUNCHER
+  chmod 700 "$ATTACH_LAUNCHER_PATH"
+
+  install_quick_action
 
   printf '%s\n' \
     '<?xml version="1.0" encoding="UTF-8"?>' \
@@ -88,12 +285,13 @@ install_service() {
 
   print "OpenCode 서버를 설치하고 시작했습니다."
   print "LAN 주소: http://$(scutil --get LocalHostName 2>/dev/null || hostname).local:$port"
+  print "Finder 빠른 동작: $QUICK_ACTION_NAME (http://127.0.0.1:$port에 attach)"
   print "상태 확인: launchctl print $SERVICE_TARGET"
 }
 
 remove_service() {
   local confirm
-  print -n "서버 등록, 실행 스크립트, 저장된 비밀번호를 삭제합니다. 계속할까요? [y/N]: "
+  print -n "서버 등록, Finder 빠른 동작, 실행 스크립트, 저장된 비밀번호를 삭제합니다. 계속할까요? [y/N]: "
   read -r confirm
   if [[ "${confirm:l}" != "y" && "${confirm:l}" != "yes" ]]; then
     print "취소했습니다."
@@ -101,8 +299,12 @@ remove_service() {
   fi
 
   cleanup_service
-  rm -f "$PLIST_PATH" "$WRAPPER_PATH" "$PASSWORD_PATH"
-  print "OpenCode 서버 자동 실행을 삭제했습니다."
+  rm -f "$PLIST_PATH" "$WRAPPER_PATH" "$ATTACH_PATH" "$ATTACH_LAUNCHER_PATH" "$PASSWORD_PATH"
+  rm -rf "$QUICK_ACTION_PATH"
+  if [[ -x /System/Library/CoreServices/pbs ]]; then
+    /System/Library/CoreServices/pbs -flush 2>/dev/null || true
+  fi
+  print "OpenCode 서버 자동 실행과 Finder 빠른 동작을 삭제했습니다."
 }
 
 restart_service() {
