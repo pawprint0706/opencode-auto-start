@@ -264,10 +264,28 @@ function Get-ServerSetting {
     return $null
 }
 
+function ConvertTo-BoolSetting {
+    param([object]$Value)
+
+    if ($null -eq $Value) {
+        return $false
+    }
+    if ($Value -is [bool]) {
+        return [bool]$Value
+    }
+    if ($Value -is [string]) {
+        $parsed = $false
+        if ([bool]::TryParse($Value.Trim(), [ref]$parsed)) {
+            return $parsed
+        }
+    }
+    return [bool]$Value
+}
+
 function Get-AutoUpdateEnabled {
     $value = Get-ServerSetting -Name 'autoUpdate'
     if ($null -ne $value) {
-        return [bool]$value
+        return (ConvertTo-BoolSetting $value)
     }
     return $true
 }
@@ -387,6 +405,24 @@ function Install-Service {
 `$outLog = '$escapedOutLog'
 `$errLog = '$escapedErrLog'
 
+function ConvertTo-BoolSetting {
+    param([object]`$Value)
+
+    if (`$null -eq `$Value) {
+        return `$false
+    }
+    if (`$Value -is [bool]) {
+        return [bool]`$Value
+    }
+    if (`$Value -is [string]) {
+        `$parsed = `$false
+        if ([bool]::TryParse(`$Value.Trim(), [ref]`$parsed)) {
+            return `$parsed
+        }
+    }
+    return [bool]`$Value
+}
+
 try {
     if (-not (Test-Path -LiteralPath `$passwordFile)) {
         throw 'OpenCode server password file is missing.'
@@ -400,7 +436,7 @@ try {
         try {
             if (Test-Path -LiteralPath `$settingsFile) {
                 `$serverSettings = Get-Content -LiteralPath `$settingsFile -Raw | ConvertFrom-Json
-                if (`$serverSettings.PSObject.Properties.Name -contains 'autoApprove' -and [bool]`$serverSettings.autoApprove) {
+                if (`$serverSettings.PSObject.Properties.Name -contains 'autoApprove' -and (ConvertTo-BoolSetting `$serverSettings.autoApprove)) {
                     `$env:OPENCODE_PERMISSION = '{"*": "allow"}'
                 }
             }
@@ -517,6 +553,24 @@ function Write-UpdateLog {
     }
     catch {
     }
+}
+
+function ConvertTo-BoolSetting {
+    param([object]$Value)
+
+    if ($null -eq $Value) {
+        return $false
+    }
+    if ($Value -is [bool]) {
+        return [bool]$Value
+    }
+    if ($Value -is [string]) {
+        $parsed = $false
+        if ([bool]::TryParse($Value.Trim(), [ref]$parsed)) {
+            return $parsed
+        }
+    }
+    return [bool]$Value
 }
 
 function Get-UpdateCommand {
@@ -637,7 +691,7 @@ try {
         try {
             $settings = Get-Content -LiteralPath $settingsPath -Raw | ConvertFrom-Json
             if ($settings.PSObject.Properties.Name -contains 'autoUpdate') {
-                $enabled = [bool]$settings.autoUpdate
+                $enabled = ConvertTo-BoolSetting $settings.autoUpdate
             }
         }
         catch {
@@ -680,7 +734,7 @@ exit 0
     Write-Host "Explorer menu: $contextMenuLabel (attaches to http://127.0.0.1:$port)"
     Write-Host ('Automatic update at logon: {0}' -f $(if (Get-AutoUpdateEnabled) { 'enabled' } else { 'disabled' }))
     $autoApproveValue = Get-ServerSetting -Name 'autoApprove'
-    $autoApproveEnabled = if ($null -ne $autoApproveValue) { [bool]$autoApproveValue } else { $false }
+    $autoApproveEnabled = ConvertTo-BoolSetting $autoApproveValue
     Write-Host ('Auto-approve (server-wide): {0}' -f $(if ($autoApproveEnabled) { 'enabled' } else { 'disabled' }))
     Write-Host "Logs: $logDir"
     return $true
@@ -778,6 +832,7 @@ try {
                 '4' {
                     Set-AutoUpdateEnabled -Enabled (-not (Get-AutoUpdateEnabled))
                     Write-Host ('Automatic opencode updates at logon: {0}' -f $(if (Get-AutoUpdateEnabled) { 'enabled' } else { 'disabled' }))
+                    Write-Host 'The change takes effect at the next server start.'
                 }
                 '5' { $exitRequested = $true }
                 default {

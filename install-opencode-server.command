@@ -20,6 +20,7 @@ SERVICE_TARGET="gui/$UID/$LABEL"
 UPDATE_PATH="$BIN_DIR/opencode-update"
 SETTINGS_PATH="$CONFIG_DIR/server-settings.json"
 UPDATE_LOG_PATH="$LOG_DIR/opencode-update.log"
+COUNTER_PATH="$CONFIG_DIR/server-restart-count"
 
 cleanup_service() {
   local attempt
@@ -45,21 +46,58 @@ bootstrap_service() {
   return 1
 }
 
+json_escape() {
+  local s="$1"
+  s="${s//\\/\\\\}"
+  s="${s//\"/\\\"}"
+  print -r -- "$s"
+}
+
+# Returns the raw JSON value (true/false or a quoted string) for a key, or empty.
+read_setting() {
+  local key="$1"
+  sed -n "s/.*\"$key\"[[:space:]]*:[[:space:]]*\([^,}]*\).*/\1/p" "$SETTINGS_PATH" 2>/dev/null | head -n 1
+}
+
 write_setting() {
-  local key="$1" value="$2" tmp
+  local key="$1" value="$2" json_value k
+  if [[ "$value" == "true" || "$value" == "false" ]]; then
+    json_value="$value"
+  else
+    json_value="\"$(json_escape "$value")\""
+  fi
+
+  local -A settings
+  settings[autoUpdate]="$(read_setting autoUpdate)"
+  settings[autoApprove]="$(read_setting autoApprove)"
+  settings[opencodePath]="$(read_setting opencodePath)"
+  settings[$key]="$json_value"
+
+  local -a entries
+  for k in autoUpdate autoApprove opencodePath; do
+    if [[ -n "${settings[$k]}" ]]; then
+      entries+=("\"$k\": ${settings[$k]}")
+    fi
+  done
+
   mkdir -p "$CONFIG_DIR"
   umask 077
-  tmp="$CONFIG_DIR/server-settings.tmp"
-  if [[ -f "$SETTINGS_PATH" ]]; then
-    sed "s/\"$key\"[[:space:]]*:[[:space:]]*\(true\|false\)/\"$key\": $value/" "$SETTINGS_PATH" > "$tmp"
-    if ! grep -q "\"$key\"" "$tmp" 2>/dev/null; then
-      sed "s/^\(.*\)}$/\1, \"$key\": $value}/" "$SETTINGS_PATH" > "$tmp"
-    fi
-  else
-    printf '{"%s": %s}\n' "$key" "$value" > "$tmp"
-  fi
-  mv -f "$tmp" "$SETTINGS_PATH"
+  printf '{%s}\n' "$(IFS=,; print -r -- "${entries[*]}")" > "$SETTINGS_PATH.tmp"
+  mv -f "$SETTINGS_PATH.tmp" "$SETTINGS_PATH"
   chmod 600 "$SETTINGS_PATH"
+}
+
+# Finds the opencode executable, ignoring aliases and functions like Get-Command does on Windows.
+find_opencode() {
+  local bin
+  bin="$(whence -p opencode 2>/dev/null || true)"
+  if [[ -z "$bin" ]]; then
+    bin="$(command -v opencode 2>/dev/null || true)"
+    if [[ -n "$bin" && ! -x "$bin" ]]; then
+      bin=""
+    fi
+  fi
+  print -r -- "$bin"
 }
 
 setting_is_true() {
@@ -226,7 +264,7 @@ WFLOW
 install_service() {
   local opencode_bin login_path_output login_path line service_path port password confirm
 
-  opencode_bin="$(command -v opencode || true)"
+  opencode_bin="$(find_opencode)"
   if [[ -z "$opencode_bin" ]]; then
     print "OpenCode CLI를 찾지 못했습니다. 먼저 OpenCode를 설치하세요."
     print "  Homebrew: brew install anomalyco/tap/opencode"
@@ -287,12 +325,26 @@ install_service() {
   else
     write_setting autoApprove true
   fi
+  write_setting opencodePath "$opencode_bin"
 
   mkdir -p "$LAUNCH_AGENTS_DIR" "$BIN_DIR" "$LOG_DIR" "$SERVICES_DIR"
 
   printf '%s\n' '#!/bin/zsh' 'set -euo pipefail' \
     "export PATH=${(q)service_path}" \
     "opencode_bin=${(q)opencode_bin}" \
+    'count_file="$HOME/.config/opencode/server-restart-count"' \
+    'count=1' \
+    'if [[ -f "$count_file" ]]; then' \
+    '  count="$(<"$count_file" 2>/dev/null || print 1)"' \
+    '  [[ "$count" =~ "^[0-9]+$" ]] || count=1' \
+    '  if (( $(date +%s) - $(stat -f %m "$count_file" 2>/dev/null || print 0) > 60 )); then count=1; else count=$((count + 1)); fi' \
+    'fi' \
+    'if (( count > 4 )); then' \
+    '  rm -f "$count_file"' \
+    '  print -u2 "[$(date "+%Y-%m-%d %H:%M:%S")] OpenCode 서버가 3회 연속 실패하여 재시도를 중단합니다."' \
+    '  exit 0' \
+    'fi' \
+    'print "$count" > "$count_file" 2>/dev/null || true' \
     'password_file="$HOME/.config/opencode/server-password"' \
     '[[ -r "$password_file" ]] || { print -u2 "OpenCode server password file is missing."; exit 1; }' \
     'export OPENCODE_SERVER_PASSWORD="$(< "$password_file")"' \
@@ -301,7 +353,11 @@ install_service() {
     '  export OPENCODE_PERMISSION="{\"*\": \"allow\"}"' \
     'fi' \
     'update_script="$HOME/.local/bin/opencode-update"' \
-    'if [[ -x "$update_script" ]]; then "$update_script" "$opencode_bin" >/dev/null 2>&1 || true; fi' \
+    'if [[ -x "$update_script" ]]; then' \
+    '  if ! "$update_script" "$opencode_bin" >/dev/null 2>&1; then' \
+    '    print -u2 "[$(date "+%Y-%m-%d %H:%M:%S")] opencode 자동 업데이트에 실패했습니다."' \
+    '  fi' \
+    'fi' \
     "exec \"\$opencode_bin\" serve --hostname 0.0.0.0 --port ${(q)port}" > "$WRAPPER_PATH"
   chmod 700 "$WRAPPER_PATH"
 
@@ -493,7 +549,11 @@ UPDATE_SCRIPT
     "  <key>ProgramArguments</key><array><string>$WRAPPER_PATH</string></array>" \
     "  <key>WorkingDirectory</key><string>$HOME</string>" \
     '  <key>RunAtLoad</key><true/>' \
-    '  <key>KeepAlive</key><true/>' \
+    '  <key>KeepAlive</key>' \
+    '  <dict>' \
+    '    <key>SuccessfulExit</key>' \
+    '    <false/>' \
+    '  </dict>' \
     "  <key>StandardOutPath</key><string>$LOG_DIR/opencode-server.out.log</string>" \
     "  <key>StandardErrorPath</key><string>$LOG_DIR/opencode-server.err.log</string>" \
     '</dict>' \
@@ -501,6 +561,7 @@ UPDATE_SCRIPT
 
   plutil -lint "$PLIST_PATH" >/dev/null
   cleanup_service
+  rm -f "$COUNTER_PATH"
   bootstrap_service
   launchctl kickstart -k "$SERVICE_TARGET"
 
@@ -530,7 +591,7 @@ remove_service() {
   fi
 
   cleanup_service
-  rm -f "$PLIST_PATH" "$WRAPPER_PATH" "$ATTACH_PATH" "$ATTACH_LAUNCHER_PATH" "$UPDATE_PATH" "$PASSWORD_PATH" "$SETTINGS_PATH"
+  rm -f "$PLIST_PATH" "$WRAPPER_PATH" "$ATTACH_PATH" "$ATTACH_LAUNCHER_PATH" "$UPDATE_PATH" "$PASSWORD_PATH" "$SETTINGS_PATH" "$COUNTER_PATH"
   rm -rf "$QUICK_ACTION_PATH"
   if [[ -x /System/Library/CoreServices/pbs ]]; then
     /System/Library/CoreServices/pbs -flush 2>/dev/null || true
@@ -539,7 +600,7 @@ remove_service() {
 }
 
 restart_service() {
-  local attempt service_info pid opencode_bin update_script
+  local attempt service_info pid opencode_bin update_script last_exit_code
 
   if [[ ! -f "$PLIST_PATH" ]]; then
     print "OpenCode 서버가 설치되어 있지 않습니다. 먼저 설치하세요."
@@ -548,11 +609,20 @@ restart_service() {
 
   update_script="$BIN_DIR/opencode-update"
   if [[ -x "$update_script" ]]; then
-    opencode_bin="$(sed -n 's/^opencode_bin=\(.*\)$/\1/p' "$WRAPPER_PATH" 2>/dev/null | head -n 1)"
-    opencode_bin="${opencode_bin#\'}"
-    opencode_bin="${opencode_bin%\'}"
+    opencode_bin="$(read_setting opencodePath)"
+    if [[ "$opencode_bin" == \"*\" ]]; then
+      opencode_bin="${opencode_bin#\"}"
+      opencode_bin="${opencode_bin%\"}"
+    else
+      opencode_bin=""
+    fi
     if [[ -z "$opencode_bin" ]]; then
-      opencode_bin="$(command -v opencode 2>/dev/null || true)"
+      opencode_bin="$(sed -n 's/^opencode_bin=\(.*\)$/\1/p' "$WRAPPER_PATH" 2>/dev/null | head -n 1)"
+      opencode_bin="${opencode_bin#\'}"
+      opencode_bin="${opencode_bin%\'}"
+    fi
+    if [[ -z "$opencode_bin" ]]; then
+      opencode_bin="$(find_opencode)"
     fi
     if [[ -n "$opencode_bin" ]]; then
       print "opencode 업데이트를 실행합니다..."
@@ -561,6 +631,7 @@ restart_service() {
     fi
   fi
 
+  rm -f "$COUNTER_PATH"
   launchctl kickstart -k "$SERVICE_TARGET"
   for attempt in {1..20}; do
     service_info="$(launchctl print "$SERVICE_TARGET" 2>/dev/null || true)"
@@ -577,7 +648,14 @@ restart_service() {
   done
 
   print "OpenCode 서버가 재시작 후 정상 실행 상태가 아닙니다."
-  print "상태: 실행 중이 아님"
+  if [[ "$service_info" =~ 'state = ([a-z]+)' ]]; then
+    print "상태: $match[1]"
+  else
+    print "상태: 실행 중이 아님"
+  fi
+  if [[ "$service_info" =~ 'last exit code = ([0-9-]+)' ]]; then
+    print "마지막 종료 코드: $match[1]"
+  fi
   print "오류 로그: $LOG_DIR/opencode-server.err.log"
   return 1
 }
