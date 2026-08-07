@@ -1,4 +1,4 @@
-﻿# Run directly in PowerShell, or through install-opencode-server.bat.
+# Run directly in PowerShell, or through install-opencode-server.bat.
 
 [CmdletBinding()]
 param(
@@ -23,7 +23,10 @@ $binDir = Join-Path $env:LOCALAPPDATA 'OpenCode\bin'
 $wrapperPath = Join-Path $binDir 'opencode-server.ps1'
 $launcherPath = Join-Path $binDir 'opencode-server.vbs'
 $attachPath = Join-Path $binDir 'opencode-attach.ps1'
+$updateScriptPath = Join-Path $binDir 'opencode-update.ps1'
 $logDir = Join-Path $env:LOCALAPPDATA 'OpenCode\Logs'
+$settingsPath = Join-Path $configDir 'server-settings.json'
+$updateLogPath = Join-Path $logDir 'opencode-update.log'
 $contextMenuRoots = @(
     'HKCU:\Software\Classes\Directory\Background\shell',
     'HKCU:\Software\Classes\Directory\shell',
@@ -245,6 +248,38 @@ function Remove-ContextMenu {
     }
 }
 
+function Get-AutoUpdateEnabled {
+    if (Test-Path -LiteralPath $settingsPath) {
+        try {
+            $settings = Get-Content -LiteralPath $settingsPath -Raw | ConvertFrom-Json
+            if ($settings.PSObject.Properties.Name -contains 'autoUpdate') {
+                return [bool]$settings.autoUpdate
+            }
+        }
+        catch {
+        }
+    }
+    return $true
+}
+
+function Set-AutoUpdateEnabled {
+    param([bool]$Enabled)
+
+    New-Item -ItemType Directory -Force $configDir | Out-Null
+    $settings = [pscustomobject]@{}
+    if (Test-Path -LiteralPath $settingsPath) {
+        try {
+            $settings = Get-Content -LiteralPath $settingsPath -Raw | ConvertFrom-Json
+        }
+        catch {
+            $settings = [pscustomobject]@{}
+        }
+    }
+    $settings | Add-Member -NotePropertyName autoUpdate -NotePropertyValue $Enabled -Force
+    $utf8 = New-Object Text.UTF8Encoding($false)
+    [IO.File]::WriteAllText($settingsPath, ($settings | ConvertTo-Json -Depth 5), $utf8)
+}
+
 function Install-Service {
     $opencode = Get-Command opencode -CommandType Application, ExternalScript -ErrorAction SilentlyContinue |
         Select-Object -First 1
@@ -287,12 +322,17 @@ function Install-Service {
         )
     }
 
+    $autoUpdateText = Read-Host 'Update opencode automatically at logon? [Y/n]'
+    $autoUpdate = $autoUpdateText -notmatch '^(?i:n|no)$'
+    Set-AutoUpdateEnabled -Enabled $autoUpdate
+
     New-Item -ItemType Directory -Force $configDir, $binDir, $logDir | Out-Null
     Copy-Item -LiteralPath $iconSourcePath -Destination $contextMenuIconPath -Force
     $opencodePath = $opencode.Path.Replace("'", "''")
     $escapedPasswordPath = $passwordPath.Replace("'", "''")
     $escapedOutLog = (Join-Path $logDir 'opencode-server.out.log').Replace("'", "''")
     $escapedErrLog = (Join-Path $logDir 'opencode-server.err.log').Replace("'", "''")
+    $escapedUpdateScript = $updateScriptPath.Replace("'", "''")
     $wrapper = @"
 `$ErrorActionPreference = 'Stop'
 `$passwordFile = '$escapedPasswordPath'
@@ -308,6 +348,15 @@ try {
     try {
         Set-Location -LiteralPath `$HOME
         `$env:OPENCODE_SERVER_PASSWORD = [Runtime.InteropServices.Marshal]::PtrToStringBSTR(`$passwordBstr)
+        `$updateScript = '$escapedUpdateScript'
+        try {
+            if (Test-Path -LiteralPath `$updateScript) {
+                & `$updateScript -OpencodePath '$opencodePath' | Out-Null
+            }
+        }
+        catch {
+            `$_.Exception.Message | Add-Content -LiteralPath `$errLog
+        }
         & '$opencodePath' serve --hostname 0.0.0.0 --port $port 1>> `$outLog 2>> `$errLog
         if (`$LASTEXITCODE -ne 0) {
             throw "OpenCode exited with code `$LASTEXITCODE."
@@ -387,6 +436,181 @@ catch {
 "@
     [System.IO.File]::WriteAllText($attachPath, $attach, [System.Text.Encoding]::Unicode)
 
+    $escapedSettingsPath = $settingsPath.Replace("'", "''")
+    $escapedUpdateLog = $updateLogPath.Replace("'", "''")
+    $updateScript = @'
+[CmdletBinding()]
+param(
+    [string]$OpencodePath
+)
+
+$ErrorActionPreference = 'Stop'
+$settingsPath = '__SETTINGS__'
+$logPath = '__LOG__'
+$updateTimeoutSeconds = 300
+
+function Write-UpdateLog {
+    param([string]$Message)
+
+    $line = '[{0}] {1}' -f (Get-Date -Format 'yyyy-MM-dd HH:mm:ss'), $Message
+    try {
+        Add-Content -LiteralPath $logPath -Value $line -Encoding UTF8
+    }
+    catch {
+    }
+}
+
+function Get-UpdateCommand {
+    param([string]$OpencodePath)
+
+    $shimDir = Join-Path $HOME 'scoop\shims'
+    $appsDir = Join-Path $HOME 'scoop\apps'
+    $isScoopPath = $OpencodePath.StartsWith($shimDir, [StringComparison]::OrdinalIgnoreCase) -or
+        $OpencodePath.StartsWith($appsDir, [StringComparison]::OrdinalIgnoreCase)
+
+    if ($isScoopPath) {
+        $scoopPs1 = Join-Path $shimDir 'scoop.ps1'
+        if (Test-Path -LiteralPath $scoopPs1) {
+            return @{ Tool = 'scoop'; Command = @($scoopPs1, 'update', 'opencode') }
+        }
+        $scoopCmd = Join-Path $shimDir 'scoop.cmd'
+        if (Test-Path -LiteralPath $scoopCmd) {
+            return @{ Tool = 'scoop'; Command = @($scoopCmd, 'update', 'opencode') }
+        }
+        $scoopCommand = Get-Command scoop -CommandType Application -ErrorAction SilentlyContinue
+        if ($null -ne $scoopCommand) {
+            return @{ Tool = 'scoop'; Command = @($scoopCommand.Source, 'update', 'opencode') }
+        }
+    }
+
+    $npm = Get-Command npm -CommandType Application -ErrorAction SilentlyContinue
+    if ($null -ne $npm) {
+        try {
+            $prefix = (& $npm.Source 'prefix' '-g' 2>$null | Select-Object -Last 1)
+            if ($prefix -and $OpencodePath.StartsWith($prefix.Trim(), [StringComparison]::OrdinalIgnoreCase)) {
+                return @{ Tool = 'npm'; Command = @($npm.Source, 'install', '-g', 'opencode-ai@latest') }
+            }
+        }
+        catch {
+        }
+    }
+
+    $pnpm = Get-Command pnpm -CommandType Application -ErrorAction SilentlyContinue
+    if ($null -ne $pnpm) {
+        try {
+            $bin = (& $pnpm.Source 'bin' '-g' 2>$null | Select-Object -Last 1)
+            if ($bin -and $OpencodePath.StartsWith($bin.Trim(), [StringComparison]::OrdinalIgnoreCase)) {
+                return @{ Tool = 'pnpm'; Command = @($pnpm.Source, 'add', '-g', 'opencode-ai@latest') }
+            }
+        }
+        catch {
+        }
+    }
+
+    $yarn = Get-Command yarn -CommandType Application -ErrorAction SilentlyContinue
+    if ($null -ne $yarn) {
+        try {
+            $bin = (& $yarn.Source 'global' 'bin' 2>$null | Select-Object -Last 1)
+            if ($bin -and $OpencodePath.StartsWith($bin.Trim(), [StringComparison]::OrdinalIgnoreCase)) {
+                return @{ Tool = 'yarn'; Command = @($yarn.Source, 'global', 'add', 'opencode-ai@latest') }
+            }
+        }
+        catch {
+        }
+    }
+
+    $bun = Get-Command bun -CommandType Application -ErrorAction SilentlyContinue
+    if ($null -ne $bun) {
+        try {
+            $bin = (& $bun.Source 'pm' 'bin' '-g' 2>$null | Select-Object -Last 1)
+            if ($bin -and $OpencodePath.StartsWith($bin.Trim(), [StringComparison]::OrdinalIgnoreCase)) {
+                return @{ Tool = 'bun'; Command = @($bun.Source, 'add', '-g', 'opencode-ai@latest') }
+            }
+        }
+        catch {
+        }
+    }
+
+    return @{ Tool = 'self'; Command = @($OpencodePath, 'upgrade') }
+}
+
+function Invoke-UpdateCommand {
+    param(
+        [object]$Update,
+        [int]$TimeoutSeconds
+    )
+
+    $job = Start-Job -ScriptBlock {
+        param($Command)
+
+        $args = @()
+        if ($Command.Count -gt 1) {
+            $args = $Command[1..($Command.Count - 1)]
+        }
+        & $Command[0] @args | Out-Null
+        $LASTEXITCODE
+    } -ArgumentList (,$Update.Command)
+
+    if (-not (Wait-Job $job -Timeout $TimeoutSeconds)) {
+        Stop-Job $job -ErrorAction SilentlyContinue
+        Remove-Job $job -Force -ErrorAction SilentlyContinue
+        return @{ TimedOut = $true; ExitCode = $null }
+    }
+
+    $exitCode = Receive-Job $job -Keep | Select-Object -Last 1
+    Remove-Job $job -Force -ErrorAction SilentlyContinue
+    if ($null -eq $exitCode) {
+        $exitCode = 0
+    }
+    return @{ TimedOut = $false; ExitCode = $exitCode }
+}
+
+try {
+    Write-UpdateLog "Checking opencode at $OpencodePath"
+
+    if (-not (Test-Path -LiteralPath $OpencodePath)) {
+        Write-UpdateLog 'Opencode path does not exist; skipping auto-update.'
+        exit 0
+    }
+
+    $enabled = $true
+    if (Test-Path -LiteralPath $settingsPath) {
+        try {
+            $settings = Get-Content -LiteralPath $settingsPath -Raw | ConvertFrom-Json
+            if ($settings.PSObject.Properties.Name -contains 'autoUpdate') {
+                $enabled = [bool]$settings.autoUpdate
+            }
+        }
+        catch {
+            $enabled = $true
+        }
+    }
+    if (-not $enabled) {
+        Write-UpdateLog 'Auto-update is disabled in server-settings.json; skipping.'
+        exit 0
+    }
+
+    $before = (& $OpencodePath --version 2>$null | Select-Object -First 1)
+    $update = Get-UpdateCommand -OpencodePath $OpencodePath
+    Write-UpdateLog "Updating opencode via $($update.Tool)... (version before: $before)"
+
+    $result = Invoke-UpdateCommand -Update $update -TimeoutSeconds $updateTimeoutSeconds
+    if ($result.TimedOut) {
+        Write-UpdateLog "Update timed out after $updateTimeoutSeconds seconds."
+        exit 0
+    }
+
+    $after = (& $OpencodePath --version 2>$null | Select-Object -First 1)
+    Write-UpdateLog ("Update finished (exit code {0}). Version: {1} -> {2}" -f $result.ExitCode, $before, $after)
+}
+catch {
+    Write-UpdateLog "Auto-update failed: $($_.Exception.Message)"
+}
+exit 0
+'@
+    $updateScript = $updateScript.Replace('__SETTINGS__', $escapedSettingsPath).Replace('__LOG__', $escapedUpdateLog)
+    [System.IO.File]::WriteAllText($updateScriptPath, $updateScript, [System.Text.Encoding]::Unicode)
+
     $ownerSid = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
     Invoke-TaskOperation -Operation RegisterTask -OwnerSid $ownerSid -ActionPath $launcherPath
 
@@ -395,6 +619,7 @@ catch {
     Write-Host 'OpenCode server has been installed and started.'
     Write-Host "LAN address: http://$env:COMPUTERNAME`:$port"
     Write-Host "Explorer menu: $contextMenuLabel (attaches to http://127.0.0.1:$port)"
+    Write-Host ('Automatic update at logon: {0}' -f $(if (Get-AutoUpdateEnabled) { 'enabled' } else { 'disabled' }))
     Write-Host "Logs: $logDir"
     return $true
 }
@@ -404,7 +629,7 @@ function Remove-Service {
     Invoke-TaskOperation -Operation RemoveTask -OwnerSid $ownerSid -ActionPath ''
     Remove-ContextMenu
     Remove-Item -Force -ErrorAction SilentlyContinue `
-        $wrapperPath, $launcherPath, $attachPath, $passwordPath, $contextMenuIconPath
+        $wrapperPath, $launcherPath, $attachPath, $updateScriptPath, $passwordPath, $contextMenuIconPath, $settingsPath
     Write-Host 'OpenCode server automatic startup and Explorer context menu have been removed.'
     return $true
 }
@@ -462,7 +687,8 @@ try {
     Write-Host '1) Install or reinstall'
     Write-Host '2) Remove'
     Write-Host '3) Restart'
-    $action = Read-Host 'Select [1/2/3]'
+    Write-Host '4) Toggle automatic updates'
+    $action = Read-Host 'Select [1/2/3/4]'
 
     $succeeded = switch ($action) {
         '1' { Install-Service }
@@ -477,8 +703,13 @@ try {
             }
         }
         '3' { Restart-Service }
+        '4' {
+            Set-AutoUpdateEnabled -Enabled (-not (Get-AutoUpdateEnabled))
+            Write-Host ('Automatic opencode updates at logon: {0}' -f $(if (Get-AutoUpdateEnabled) { 'enabled' } else { 'disabled' }))
+            $true
+        }
         default {
-            Write-Host 'Select 1, 2 or 3.'
+            Write-Host 'Select 1, 2, 3 or 4.'
             $false
         }
     }

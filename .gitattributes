@@ -1,0 +1,10 @@
+# Windows scripts: always keep CRLF on checkout
+*.bat text eol=crlf
+*.ps1 text eol=crlf
+
+# macOS/Linux shell scripts: always keep LF on checkout
+*.command text eol=lf
+*.sh text eol=lf
+
+# Binary files
+*.ico binary

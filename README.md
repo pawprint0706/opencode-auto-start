@@ -19,10 +19,15 @@ Finder에서 `install-opencode-server.command`를 더블클릭합니다.
 
 삭제하려면 같은 파일을 실행한 뒤 `2`를, 재시작하려면 `3`을 선택합니다. 삭제 시 LaunchAgent·Finder 빠른 동작·래퍼·저장 비밀번호가 함께 제거됩니다.
 
+로그온 시 서버 시작 전에 opencode를 자동 업데이트합니다(`4`로 설정을 끌 수 있음). 설치 방식(Homebrew/npm/pnpm/yarn/bun/직접 설치)을 실행 파일 경로에서 감지해 해당 패키지 매니저로 최신 버전을 설치한 뒤 새 버전으로 서버를 시작합니다. 자동 업데이트는 끄거나 켤 수 있으며, 끄면 다음 로그온부터 업데이트를 시도하지 않습니다. 업데이트 실패는 서버 시작을 막지 않고 `opencode-update.log`에만 기록됩니다.
+
 - 서비스: `com.anomalyco.opencode-server`
 - 비밀번호: `~/.config/opencode/server-password`
 - 서버 래퍼: `~/.local/bin/opencode-server`
 - attach 래퍼: `~/.local/bin/opencode-attach`
+- 자동 업데이트 스크립트: `~/.local/bin/opencode-update`
+- 자동 업데이트 설정: `~/.config/opencode/server-settings.json`
+- 업데이트 로그: `~/Library/Logs/OpenCode/opencode-update.log`
 - Finder 빠른 동작: `~/Library/Services/OpenCode에서 열기.workflow`
 - 로그: `~/Library/Logs/OpenCode/`
 
@@ -41,10 +46,15 @@ Explorer에서 `install-opencode-server.bat`를 더블클릭합니다. 작업 �
 
 삭제하려면 같은 `.bat` 파일을 실행한 뒤 `2`를, 재시작하려면 `3`을 선택합니다. 삭제 시 예약 작업·우클릭 메뉴·래퍼·아이콘·저장 비밀번호가 함께 제거됩니다.
 
+로그온 시 서버 시작 전에 opencode를 자동 업데이트합니다(`4`로 설정을 끌 수 있음). 설치 방식(scoop/npm/pnpm/yarn/bun/직접 설치)을 실행 파일 경로에서 감지해 해당 패키지 매니저로 최신 버전을 설치한 뒤 새 버전으로 서버를 시작합니다. 자동 업데이트는 끄거나 켤 수 있으며, 끄면 다음 로그온부터 업데이트를 시도하지 않습니다. 업데이트 실패는 서버 시작을 막지 않고 `opencode-update.log`에만 기록됩니다.
+
 - 비밀번호: `%LOCALAPPDATA%\OpenCode\server-password.dpapi`
 - 우클릭 메뉴 아이콘: `%LOCALAPPDATA%\OpenCode\icon.ico`
 - 서버 래퍼: `%LOCALAPPDATA%\OpenCode\bin\opencode-server.ps1`
 - attach 래퍼: `%LOCALAPPDATA%\OpenCode\bin\opencode-attach.ps1`
+- 자동 업데이트 스크립트: `%LOCALAPPDATA%\OpenCode\bin\opencode-update.ps1`
+- 자동 업데이트 설정: `%LOCALAPPDATA%\OpenCode\server-settings.json`
+- 업데이트 로그: `%LOCALAPPDATA%\OpenCode\Logs\opencode-update.log`
 - 로그: `%LOCALAPPDATA%\OpenCode\Logs\`
 
 예약 작업은 Windows 10과 11에서 창이 표시되지 않도록 창 없는 런처를 통해 현재 사용자 로그온에만 실행되며, 배터리 사용 여부와 관계없이 계속 실행됩니다. 서버가 비정상 종료되면 작업 스케줄러가 최대 3회 다시 시작합니다.

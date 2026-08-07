@@ -17,6 +17,9 @@ SERVICES_DIR="$HOME/Library/Services"
 QUICK_ACTION_NAME="OpenCode에서 열기"
 QUICK_ACTION_PATH="$SERVICES_DIR/$QUICK_ACTION_NAME.workflow"
 SERVICE_TARGET="gui/$UID/$LABEL"
+UPDATE_PATH="$BIN_DIR/opencode-update"
+SETTINGS_PATH="$CONFIG_DIR/server-settings.json"
+UPDATE_LOG_PATH="$LOG_DIR/opencode-update.log"
 
 cleanup_service() {
   local attempt
@@ -39,6 +42,23 @@ bootstrap_service() {
   done
 
   print -u2 "$bootstrap_error"
+  return 1
+}
+
+write_settings() {
+  local enabled="$1"
+  mkdir -p "$CONFIG_DIR"
+  umask 077
+  printf '{"autoUpdate": %s}\n' "$enabled" > "$SETTINGS_PATH"
+  chmod 600 "$SETTINGS_PATH"
+}
+
+settings_enabled() {
+  local value
+  if [[ -f "$SETTINGS_PATH" ]]; then
+    value="$(sed -n 's/.*"autoUpdate"[[:space:]]*:[[:space:]]*\(true\|false\).*/\1/p' "$SETTINGS_PATH")"
+    [[ "$value" == "true" ]] && return 0
+  fi
   return 1
 }
 
@@ -243,14 +263,25 @@ install_service() {
     chmod 600 "$PASSWORD_PATH"
   fi
 
+  print -n "로그온 시 opencode 자동 업데이트? [Y/n]: "
+  read -r auto_update
+  if [[ "${auto_update:l}" == "n" || "${auto_update:l}" == "no" ]]; then
+    write_settings false
+  else
+    write_settings true
+  fi
+
   mkdir -p "$LAUNCH_AGENTS_DIR" "$BIN_DIR" "$LOG_DIR" "$SERVICES_DIR"
 
   printf '%s\n' '#!/bin/zsh' 'set -euo pipefail' \
     "export PATH=${(q)service_path}" \
+    "opencode_bin=${(q)opencode_bin}" \
     'password_file="$HOME/.config/opencode/server-password"' \
     '[[ -r "$password_file" ]] || { print -u2 "OpenCode server password file is missing."; exit 1; }' \
     'export OPENCODE_SERVER_PASSWORD="$(< "$password_file")"' \
-    "exec ${(q)opencode_bin} serve --hostname 0.0.0.0 --port ${(q)port}" > "$WRAPPER_PATH"
+    'update_script="$HOME/.local/bin/opencode-update"' \
+    'if [[ -x "$update_script" ]]; then "$update_script" "$opencode_bin" >/dev/null 2>&1 || true; fi' \
+    "exec \"\$opencode_bin\" serve --hostname 0.0.0.0 --port ${(q)port}" > "$WRAPPER_PATH"
   chmod 700 "$WRAPPER_PATH"
 
   printf '%s\n' '#!/bin/zsh' 'set -euo pipefail' \
@@ -291,6 +322,145 @@ done
 LAUNCHER
   chmod 700 "$ATTACH_LAUNCHER_PATH"
 
+  cat > "$UPDATE_PATH" <<'UPDATE_SCRIPT'
+#!/bin/zsh
+# opencode 자동 업데이트 (opencode-server 래퍼가 서버 시작 전에 호출)
+
+set -u
+
+opencode_bin="${1:-}"
+settings_path="$HOME/.config/opencode/server-settings.json"
+log_path="$HOME/Library/Logs/OpenCode/opencode-update.log"
+timeout_seconds=300
+
+log_line() {
+  local line
+  line="[$(date '+%Y-%m-%d %H:%M:%S')] $1"
+  print -r -- "$line" >> "$log_path" 2>/dev/null || true
+}
+
+detect_update_command() {
+  local opencode_bin="$1" prefix value
+
+  if command -v brew >/dev/null 2>&1; then
+    prefix="$(brew --prefix 2>/dev/null || true)"
+    if [[ -n "$prefix" && "$opencode_bin" == "$prefix"/* ]]; then
+      if brew list --cask opencode >/dev/null 2>&1; then
+        print -- "brew-cask"
+        return 0
+      fi
+      print -- "brew"
+      return 0
+    fi
+  fi
+
+  if command -v npm >/dev/null 2>&1; then
+    prefix="$(npm prefix -g 2>/dev/null || true)"
+    if [[ -n "$prefix" && "$opencode_bin" == "$prefix"/bin/opencode* ]]; then
+      print -- "npm"
+      return 0
+    fi
+  fi
+
+  if command -v pnpm >/dev/null 2>&1; then
+    prefix="$(pnpm bin -g 2>/dev/null || true)"
+    if [[ -n "$prefix" && "$opencode_bin" == "$prefix"/opencode* ]]; then
+      print -- "pnpm"
+      return 0
+    fi
+  fi
+
+  if command -v yarn >/dev/null 2>&1; then
+    prefix="$(yarn global bin 2>/dev/null || true)"
+    if [[ -n "$prefix" && "$opencode_bin" == "$prefix"/opencode* ]]; then
+      print -- "yarn"
+      return 0
+    fi
+  fi
+
+  if command -v bun >/dev/null 2>&1; then
+    prefix="$(bun pm bin -g 2>/dev/null || true)"
+    if [[ -n "$prefix" && "$opencode_bin" == "$prefix"/opencode* ]]; then
+      print -- "bun"
+      return 0
+    fi
+  fi
+
+  print -- "self"
+  return 0
+}
+
+run_update() {
+  local tool="$1" opencode_bin="$2"
+  local -a cmd
+  local pid exit_code elapsed=0 out_file
+
+  case "$tool" in
+    brew)      cmd=(brew upgrade opencode) ;;
+    brew-cask) cmd=(brew upgrade --cask opencode) ;;
+    npm)       cmd=(npm install -g opencode-ai@latest) ;;
+    pnpm)      cmd=(pnpm add -g opencode-ai@latest) ;;
+    yarn)      cmd=(yarn global add opencode-ai@latest) ;;
+    bun)       cmd=(bun add -g opencode-ai@latest) ;;
+    *)         cmd=("$opencode_bin" upgrade) ;;
+  esac
+
+  out_file="$(mktemp /tmp/opencode-update.XXXXXX)" 2>/dev/null || out_file="/tmp/opencode-update.$$"
+  ("$cmd[@]" >"$out_file" 2>&1) &
+  pid=$!
+
+  while kill -0 "$pid" 2>/dev/null; do
+    sleep 1
+    (( elapsed += 1 ))
+    if (( elapsed >= timeout_seconds )); then
+      kill "$pid" 2>/dev/null || true
+      wait "$pid" 2>/dev/null || true
+      log_line "업데이트 시간 초과 (${timeout_seconds}초)로 중단했습니다."
+      rm -f "$out_file"
+      return 0
+    fi
+  done
+
+  wait "$pid"
+  exit_code=$?
+  rm -f "$out_file"
+  return $exit_code
+}
+
+log_line "opencode 업데이트 확인: $opencode_bin"
+
+if [[ ! -x "$opencode_bin" ]]; then
+  log_line "opencode 경로가 존재하지 않습니다. 업데이트를 건너뜁니다."
+  exit 0
+fi
+
+enabled=true
+if [[ -f "$settings_path" ]]; then
+  value="$(sed -n 's/.*"autoUpdate"[[:space:]]*:[[:space:]]*\(true\|false\).*/\1/p' "$settings_path")"
+  if [[ -n "$value" && "$value" != "true" ]]; then
+    enabled=false
+  fi
+fi
+
+if [[ "$enabled" != "true" ]]; then
+  log_line "자동 업데이트가 꺼져 있습니다 (server-settings.json). 건너뜁니다."
+  exit 0
+fi
+
+tool="$(detect_update_command "$opencode_bin")"
+before="$("$opencode_bin" --version 2>/dev/null | head -n 1)"
+
+log_line "감지된 설치 방식: $tool (업데이트 전 버전: $before)"
+
+run_update "$tool" "$opencode_bin"
+exit_code=$?
+
+after="$("$opencode_bin" --version 2>/dev/null | head -n 1)"
+log_line "업데이트 종료 (exit code $exit_code). 버전: $before -> $after"
+exit 0
+UPDATE_SCRIPT
+  chmod 700 "$UPDATE_PATH"
+
   install_quick_action
 
   printf '%s\n' \
@@ -316,6 +486,11 @@ LAUNCHER
   print "OpenCode 서버를 설치하고 시작했습니다."
   print "LAN 주소: http://$(scutil --get LocalHostName 2>/dev/null || hostname).local:$port"
   print "Finder 빠른 동작: $QUICK_ACTION_NAME (http://127.0.0.1:${port}에 attach)"
+  if settings_enabled; then
+    print "자동 업데이트: 켜짐 (로그온 시 최신 버전으로 업데이트 후 서버 시작)"
+  else
+    print "자동 업데이트: 꺼짐"
+  fi
   print "상태 확인: launchctl print $SERVICE_TARGET"
 }
 
@@ -329,7 +504,7 @@ remove_service() {
   fi
 
   cleanup_service
-  rm -f "$PLIST_PATH" "$WRAPPER_PATH" "$ATTACH_PATH" "$ATTACH_LAUNCHER_PATH" "$PASSWORD_PATH"
+  rm -f "$PLIST_PATH" "$WRAPPER_PATH" "$ATTACH_PATH" "$ATTACH_LAUNCHER_PATH" "$UPDATE_PATH" "$PASSWORD_PATH" "$SETTINGS_PATH"
   rm -rf "$QUICK_ACTION_PATH"
   if [[ -x /System/Library/CoreServices/pbs ]]; then
     /System/Library/CoreServices/pbs -flush 2>/dev/null || true
@@ -371,13 +546,23 @@ print "OpenCode 서버 자동 실행 관리"
 print "1) 설치 또는 다시 설치"
 print "2) 삭제"
 print "3) 재시작"
-print -n "선택 [1/2/3]: "
+print "4) 자동 업데이트 켜기/끄기"
+print -n "선택 [1/2/3/4]: "
 read -r action
 
 case "$action" in
   1) install_service ;;
   2) remove_service ;;
   3) restart_service ;;
+  4)
+    if settings_enabled; then
+      write_settings false
+      print "자동 업데이트를 껐습니다. (서버 재시작 후 반영)"
+    else
+      write_settings true
+      print "자동 업데이트를 켰습니다. (서버 재시작 후 반영)"
+    fi
+    ;;
   *) print "올바른 번호를 선택하세요."; exit 1 ;;
 esac
 
