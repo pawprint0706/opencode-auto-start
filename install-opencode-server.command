@@ -45,18 +45,27 @@ bootstrap_service() {
   return 1
 }
 
-write_settings() {
-  local enabled="$1"
+write_setting() {
+  local key="$1" value="$2" tmp
   mkdir -p "$CONFIG_DIR"
   umask 077
-  printf '{"autoUpdate": %s}\n' "$enabled" > "$SETTINGS_PATH"
+  tmp="$CONFIG_DIR/server-settings.tmp"
+  if [[ -f "$SETTINGS_PATH" ]]; then
+    sed "s/\"$key\"[[:space:]]*:[[:space:]]*\(true\|false\)/\"$key\": $value/" "$SETTINGS_PATH" > "$tmp"
+    if ! grep -q "\"$key\"" "$tmp" 2>/dev/null; then
+      sed "s/^\(.*\)}$/\1, \"$key\": $value}/" "$SETTINGS_PATH" > "$tmp"
+    fi
+  else
+    printf '{"%s": %s}\n' "$key" "$value" > "$tmp"
+  fi
+  mv -f "$tmp" "$SETTINGS_PATH"
   chmod 600 "$SETTINGS_PATH"
 }
 
-settings_enabled() {
-  local value
+setting_is_true() {
+  local key="$1" value
   if [[ -f "$SETTINGS_PATH" ]]; then
-    value="$(sed -n 's/.*"autoUpdate"[[:space:]]*:[[:space:]]*\(true\|false\).*/\1/p' "$SETTINGS_PATH")"
+    value="$(sed -n "s/.*\"$key\"[[:space:]]*:[[:space:]]*\(true\|false\).*/\1/p" "$SETTINGS_PATH")"
     [[ "$value" == "true" ]] && return 0
   fi
   return 1
@@ -266,9 +275,17 @@ install_service() {
   print -n "로그온 시 opencode 자동 업데이트? [Y/n]: "
   read -r auto_update
   if [[ "${auto_update:l}" == "n" || "${auto_update:l}" == "no" ]]; then
-    write_settings false
+    write_setting autoUpdate false
   else
-    write_settings true
+    write_setting autoUpdate true
+  fi
+
+  print -n "서버 자동 승인(모든 권한 허용)을 사용할까요? [Y/n]: "
+  read -r auto_approve
+  if [[ "${auto_approve:l}" == "n" || "${auto_approve:l}" == "no" ]]; then
+    write_setting autoApprove false
+  else
+    write_setting autoApprove true
   fi
 
   mkdir -p "$LAUNCH_AGENTS_DIR" "$BIN_DIR" "$LOG_DIR" "$SERVICES_DIR"
@@ -279,6 +296,10 @@ install_service() {
     'password_file="$HOME/.config/opencode/server-password"' \
     '[[ -r "$password_file" ]] || { print -u2 "OpenCode server password file is missing."; exit 1; }' \
     'export OPENCODE_SERVER_PASSWORD="$(< "$password_file")"' \
+    'settings_file="$HOME/.config/opencode/server-settings.json"' \
+    'if [[ -f "$settings_file" ]] && [[ "$(sed -n '\''s/.*"autoApprove"[[:space:]]*:[[:space:]]*\(true\|false\).*/\1/p'\'' "$settings_file" 2>/dev/null)" == "true" ]]; then' \
+    '  export OPENCODE_PERMISSION="{\"*\": \"allow\"}"' \
+    'fi' \
     'update_script="$HOME/.local/bin/opencode-update"' \
     'if [[ -x "$update_script" ]]; then "$update_script" "$opencode_bin" >/dev/null 2>&1 || true; fi' \
     "exec \"\$opencode_bin\" serve --hostname 0.0.0.0 --port ${(q)port}" > "$WRAPPER_PATH"
@@ -486,10 +507,15 @@ UPDATE_SCRIPT
   print "OpenCode 서버를 설치하고 시작했습니다."
   print "LAN 주소: http://$(scutil --get LocalHostName 2>/dev/null || hostname).local:$port"
   print "Finder 빠른 동작: $QUICK_ACTION_NAME (http://127.0.0.1:${port}에 attach)"
-  if settings_enabled; then
+  if setting_is_true autoUpdate; then
     print "자동 업데이트: 켜짐 (로그온 시 최신 버전으로 업데이트 후 서버 시작)"
   else
     print "자동 업데이트: 꺼짐"
+  fi
+  if setting_is_true autoApprove; then
+    print "자동 승인(서버 전체 세션): 켜짐 (모든 권한 허용)"
+  else
+    print "자동 승인: 꺼짐"
   fi
   print "상태 확인: launchctl print $SERVICE_TARGET"
 }
@@ -513,11 +539,26 @@ remove_service() {
 }
 
 restart_service() {
-  local attempt service_info pid
+  local attempt service_info pid opencode_bin update_script
 
   if [[ ! -f "$PLIST_PATH" ]]; then
     print "OpenCode 서버가 설치되어 있지 않습니다. 먼저 설치하세요."
     return 1
+  fi
+
+  update_script="$BIN_DIR/opencode-update"
+  if [[ -x "$update_script" ]]; then
+    opencode_bin="$(sed -n 's/^opencode_bin=\(.*\)$/\1/p' "$WRAPPER_PATH" 2>/dev/null | head -n 1)"
+    opencode_bin="${opencode_bin#\'}"
+    opencode_bin="${opencode_bin%\'}"
+    if [[ -z "$opencode_bin" ]]; then
+      opencode_bin="$(command -v opencode 2>/dev/null || true)"
+    fi
+    if [[ -n "$opencode_bin" ]]; then
+      print "opencode 업데이트를 실행합니다..."
+      "$update_script" "$opencode_bin" >/dev/null 2>&1 || true
+      print "업데이트 로그: $UPDATE_LOG_PATH"
+    fi
   fi
 
   launchctl kickstart -k "$SERVICE_TARGET"
@@ -541,31 +582,35 @@ restart_service() {
   return 1
 }
 
-clear
-print "OpenCode 서버 자동 실행 관리"
-print "1) 설치 또는 다시 설치"
-print "2) 삭제"
-print "3) 재시작"
-print "4) 자동 업데이트 켜기/끄기"
-print -n "선택 [1/2/3/4]: "
-read -r action
+while true; do
+  clear
+  print "OpenCode 서버 자동 실행 관리"
+  print "1) 설치 또는 다시 설치"
+  print "2) 삭제"
+  print "3) 업데이트 및 재시작"
+  print "4) 자동 업데이트 켜기/끄기"
+  print "5) 종료"
+  print -n "선택 [1/2/3/4/5]: "
+  read -r action
 
-case "$action" in
-  1) install_service ;;
-  2) remove_service ;;
-  3) restart_service ;;
-  4)
-    if settings_enabled; then
-      write_settings false
-      print "자동 업데이트를 껐습니다. (서버 재시작 후 반영)"
-    else
-      write_settings true
-      print "자동 업데이트를 켰습니다. (서버 재시작 후 반영)"
-    fi
-    ;;
-  *) print "올바른 번호를 선택하세요."; exit 1 ;;
-esac
+  case "$action" in
+    1) install_service || true ;;
+    2) remove_service || true ;;
+    3) restart_service || true ;;
+    4)
+      if setting_is_true autoUpdate; then
+        write_setting autoUpdate false
+        print "자동 업데이트를 껐습니다. (서버 재시작 후 반영)"
+      else
+        write_setting autoUpdate true
+        print "자동 업데이트를 켰습니다. (서버 재시작 후 반영)"
+      fi
+      ;;
+    5) break ;;
+    *) print "올바른 번호를 선택하세요." ;;
+  esac
 
-print
-print "계속하려면 Return 키를 누르세요."
-read -r
+  print
+  print "계속하려면 Return 키를 누르세요."
+  read -r
+done

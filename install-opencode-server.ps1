@@ -248,22 +248,35 @@ function Remove-ContextMenu {
     }
 }
 
-function Get-AutoUpdateEnabled {
+function Get-ServerSetting {
+    param([string]$Name)
+
     if (Test-Path -LiteralPath $settingsPath) {
         try {
             $settings = Get-Content -LiteralPath $settingsPath -Raw | ConvertFrom-Json
-            if ($settings.PSObject.Properties.Name -contains 'autoUpdate') {
-                return [bool]$settings.autoUpdate
+            if ($settings.PSObject.Properties.Name -contains $Name) {
+                return $settings.$Name
             }
         }
         catch {
         }
     }
+    return $null
+}
+
+function Get-AutoUpdateEnabled {
+    $value = Get-ServerSetting -Name 'autoUpdate'
+    if ($null -ne $value) {
+        return [bool]$value
+    }
     return $true
 }
 
-function Set-AutoUpdateEnabled {
-    param([bool]$Enabled)
+function Set-ServerSetting {
+    param(
+        [string]$Name,
+        [object]$Value
+    )
 
     New-Item -ItemType Directory -Force $configDir | Out-Null
     $settings = [pscustomobject]@{}
@@ -275,9 +288,39 @@ function Set-AutoUpdateEnabled {
             $settings = [pscustomobject]@{}
         }
     }
-    $settings | Add-Member -NotePropertyName autoUpdate -NotePropertyValue $Enabled -Force
+    $settings | Add-Member -NotePropertyName $Name -NotePropertyValue $Value -Force
     $utf8 = New-Object Text.UTF8Encoding($false)
     [IO.File]::WriteAllText($settingsPath, ($settings | ConvertTo-Json -Depth 5), $utf8)
+}
+
+function Set-AutoUpdateEnabled {
+    param([bool]$Enabled)
+
+    Set-ServerSetting -Name 'autoUpdate' -Value $Enabled
+}
+
+function Get-InstalledOpencodePath {
+    if (Test-Path -LiteralPath $settingsPath) {
+        try {
+            $settings = Get-Content -LiteralPath $settingsPath -Raw | ConvertFrom-Json
+            if ($settings.PSObject.Properties.Name -contains 'opencodePath' -and -not [string]::IsNullOrWhiteSpace($settings.opencodePath)) {
+                return [string]$settings.opencodePath
+            }
+        }
+        catch {
+        }
+    }
+    if (Test-Path -LiteralPath $attachPath) {
+        try {
+            $line = Select-String -LiteralPath $attachPath -Pattern '^\$opencodePath = ''(.+)''$' | Select-Object -First 1
+            if ($null -ne $line) {
+                return $line.Matches[0].Groups[1].Value.Replace("''", "'")
+            }
+        }
+        catch {
+        }
+    }
+    return $null
 }
 
 function Install-Service {
@@ -325,6 +368,10 @@ function Install-Service {
     $autoUpdateText = Read-Host 'Update opencode automatically at logon? [Y/n]'
     $autoUpdate = $autoUpdateText -notmatch '^(?i:n|no)$'
     Set-AutoUpdateEnabled -Enabled $autoUpdate
+    $autoApproveText = Read-Host 'Enable auto-approve (all sessions)? [Y/n]'
+    $autoApprove = $autoApproveText -notmatch '^(?i:n|no)$'
+    Set-ServerSetting -Name 'autoApprove' -Value $autoApprove
+    Set-ServerSetting -Name 'opencodePath' -Value $opencode.Path
 
     New-Item -ItemType Directory -Force $configDir, $binDir, $logDir | Out-Null
     Copy-Item -LiteralPath $iconSourcePath -Destination $contextMenuIconPath -Force
@@ -333,6 +380,7 @@ function Install-Service {
     $escapedOutLog = (Join-Path $logDir 'opencode-server.out.log').Replace("'", "''")
     $escapedErrLog = (Join-Path $logDir 'opencode-server.err.log').Replace("'", "''")
     $escapedUpdateScript = $updateScriptPath.Replace("'", "''")
+    $escapedSettingsPath = $settingsPath.Replace("'", "''")
     $wrapper = @"
 `$ErrorActionPreference = 'Stop'
 `$passwordFile = '$escapedPasswordPath'
@@ -348,6 +396,17 @@ try {
     try {
         Set-Location -LiteralPath `$HOME
         `$env:OPENCODE_SERVER_PASSWORD = [Runtime.InteropServices.Marshal]::PtrToStringBSTR(`$passwordBstr)
+        `$settingsFile = '$escapedSettingsPath'
+        try {
+            if (Test-Path -LiteralPath `$settingsFile) {
+                `$serverSettings = Get-Content -LiteralPath `$settingsFile -Raw | ConvertFrom-Json
+                if (`$serverSettings.PSObject.Properties.Name -contains 'autoApprove' -and [bool]`$serverSettings.autoApprove) {
+                    `$env:OPENCODE_PERMISSION = '{"*": "allow"}'
+                }
+            }
+        }
+        catch {
+        }
         `$updateScript = '$escapedUpdateScript'
         try {
             if (Test-Path -LiteralPath `$updateScript) {
@@ -367,6 +426,7 @@ try {
             [Runtime.InteropServices.Marshal]::ZeroFreeBSTR(`$passwordBstr)
         }
         Remove-Item Env:OPENCODE_SERVER_PASSWORD -ErrorAction SilentlyContinue
+        Remove-Item Env:OPENCODE_PERMISSION -ErrorAction SilentlyContinue
     }
 }
 catch {
@@ -436,7 +496,6 @@ catch {
 "@
     [System.IO.File]::WriteAllText($attachPath, $attach, [System.Text.Encoding]::Unicode)
 
-    $escapedSettingsPath = $settingsPath.Replace("'", "''")
     $escapedUpdateLog = $updateLogPath.Replace("'", "''")
     $updateScript = @'
 [CmdletBinding()]
@@ -620,6 +679,9 @@ exit 0
     Write-Host "LAN address: http://$env:COMPUTERNAME`:$port"
     Write-Host "Explorer menu: $contextMenuLabel (attaches to http://127.0.0.1:$port)"
     Write-Host ('Automatic update at logon: {0}' -f $(if (Get-AutoUpdateEnabled) { 'enabled' } else { 'disabled' }))
+    $autoApproveValue = Get-ServerSetting -Name 'autoApprove'
+    $autoApproveEnabled = if ($null -ne $autoApproveValue) { [bool]$autoApproveValue } else { $false }
+    Write-Host ('Auto-approve (server-wide): {0}' -f $(if ($autoApproveEnabled) { 'enabled' } else { 'disabled' }))
     Write-Host "Logs: $logDir"
     return $true
 }
@@ -644,6 +706,13 @@ function Restart-Service {
     }
     if (-not (Test-TaskOwner -Task $task -OwnerSid $ownerSid)) {
         throw [InvalidOperationException]::new("The scheduled task '$taskName' belongs to another user.")
+    }
+
+    $opencodePath = Get-InstalledOpencodePath
+    if (-not [string]::IsNullOrWhiteSpace($opencodePath) -and (Test-Path -LiteralPath $updateScriptPath)) {
+        Write-Host 'Updating opencode...'
+        & $updateScriptPath -OpencodePath $opencodePath | Out-Null
+        Write-Host "Update log: $updateLogPath"
     }
 
     Stop-ServerTask -OwnerSid $ownerSid
@@ -682,39 +751,47 @@ try {
         exit 0
     }
 
-    Clear-Host
-    Write-Host 'OpenCode Server Automatic Startup'
-    Write-Host '1) Install or reinstall'
-    Write-Host '2) Remove'
-    Write-Host '3) Restart'
-    Write-Host '4) Toggle automatic updates'
-    $action = Read-Host 'Select [1/2/3/4]'
+    while ($true) {
+        Clear-Host
+        Write-Host 'OpenCode Server Automatic Startup'
+        Write-Host '1) Install or reinstall'
+        Write-Host '2) Remove'
+        Write-Host '3) Update and restart'
+        Write-Host '4) Toggle automatic updates'
+        Write-Host '5) Exit'
+        $action = Read-Host 'Select [1/2/3/4/5]'
 
-    $succeeded = switch ($action) {
-        '1' { Install-Service }
-        '2' {
-            $confirm = Read-Host 'Delete the startup task, Explorer menu, wrapper, and saved password? [y/N]'
-            if ($confirm -match '^(?i:y|yes)$') {
-                Remove-Service
+        $exitRequested = $false
+        try {
+            switch ($action) {
+                '1' { Install-Service | Out-Null }
+                '2' {
+                    $confirm = Read-Host 'Delete the startup task, Explorer menu, wrapper, and saved password? [y/N]'
+                    if ($confirm -match '^(?i:y|yes)$') {
+                        Remove-Service | Out-Null
+                    }
+                    else {
+                        Write-Host 'Cancelled.'
+                    }
+                }
+                '3' { Restart-Service | Out-Null }
+                '4' {
+                    Set-AutoUpdateEnabled -Enabled (-not (Get-AutoUpdateEnabled))
+                    Write-Host ('Automatic opencode updates at logon: {0}' -f $(if (Get-AutoUpdateEnabled) { 'enabled' } else { 'disabled' }))
+                }
+                '5' { $exitRequested = $true }
+                default {
+                    Write-Host 'Select 1, 2, 3, 4 or 5.'
+                }
             }
-            else {
-                Write-Host 'Cancelled.'
-                $true
-            }
         }
-        '3' { Restart-Service }
-        '4' {
-            Set-AutoUpdateEnabled -Enabled (-not (Get-AutoUpdateEnabled))
-            Write-Host ('Automatic opencode updates at logon: {0}' -f $(if (Get-AutoUpdateEnabled) { 'enabled' } else { 'disabled' }))
-            $true
+        catch {
+            Write-Host "Error: $($_.Exception.Message)"
         }
-        default {
-            Write-Host 'Select 1, 2, 3 or 4.'
-            $false
+        if ($exitRequested) {
+            break
         }
-    }
-    if (-not $succeeded) {
-        exit 1
+        Read-Host 'Press Enter to return to the main menu'
     }
 }
 catch {
