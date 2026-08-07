@@ -56,7 +56,10 @@ json_escape() {
 # Returns the raw JSON value (true/false or a quoted string) for a key, or empty.
 read_setting() {
   local key="$1"
-  sed -n "s/.*\"$key\"[[:space:]]*:[[:space:]]*\([^,}]*\).*/\1/p" "$SETTINGS_PATH" 2>/dev/null | head -n 1
+  if [[ ! -f "$SETTINGS_PATH" ]]; then
+    return 0
+  fi
+  sed -n "s/.*\"$key\"[[:space:]]*:[[:space:]]*\([^,}]*\).*/\1/p" "$SETTINGS_PATH" 2>/dev/null | head -n 1 || true
 }
 
 write_setting() {
@@ -103,7 +106,7 @@ find_opencode() {
 setting_is_true() {
   local key="$1" value
   if [[ -f "$SETTINGS_PATH" ]]; then
-    value="$(sed -n "s/.*\"$key\"[[:space:]]*:[[:space:]]*\(true\|false\).*/\1/p" "$SETTINGS_PATH")"
+    value="$(sed -nE "s/.*\"$key\"[[:space:]]*:[[:space:]]*(true|false).*/\1/p" "$SETTINGS_PATH" 2>/dev/null | head -n 1 || true)"
     [[ "$value" == "true" ]] && return 0
   fi
   return 1
@@ -349,7 +352,7 @@ install_service() {
     '[[ -r "$password_file" ]] || { print -u2 "OpenCode server password file is missing."; exit 1; }' \
     'export OPENCODE_SERVER_PASSWORD="$(< "$password_file")"' \
     'settings_file="$HOME/.config/opencode/server-settings.json"' \
-    'if [[ -f "$settings_file" ]] && [[ "$(sed -n '\''s/.*"autoApprove"[[:space:]]*:[[:space:]]*\(true\|false\).*/\1/p'\'' "$settings_file" 2>/dev/null)" == "true" ]]; then' \
+    'if [[ -f "$settings_file" ]] && [[ "$(sed -nE '\''s/.*"autoApprove"[[:space:]]*:[[:space:]]*(true|false).*/\1/p'\'' "$settings_file" 2>/dev/null | head -n 1)" == "true" ]]; then' \
     '  export OPENCODE_PERMISSION="{\"*\": \"allow\"}"' \
     'fi' \
     'update_script="$HOME/.local/bin/opencode-update"' \
@@ -473,8 +476,8 @@ run_update() {
   local pid exit_code elapsed=0 out_file
 
   case "$tool" in
-    brew)      cmd=(brew upgrade opencode) ;;
-    brew-cask) cmd=(brew upgrade --cask opencode) ;;
+    brew)      cmd=(/bin/zsh -c 'brew update && brew upgrade opencode') ;;
+    brew-cask) cmd=(/bin/zsh -c 'brew update && brew upgrade --cask opencode') ;;
     npm)       cmd=(npm install -g opencode-ai@latest) ;;
     pnpm)      cmd=(pnpm add -g opencode-ai@latest) ;;
     yarn)      cmd=(yarn global add opencode-ai@latest) ;;
@@ -513,7 +516,7 @@ fi
 
 enabled=true
 if [[ -f "$settings_path" ]]; then
-  value="$(sed -n 's/.*"autoUpdate"[[:space:]]*:[[:space:]]*\(true\|false\).*/\1/p' "$settings_path")"
+  value="$(sed -nE 's/.*"autoUpdate"[[:space:]]*:[[:space:]]*(true|false).*/\1/p' "$settings_path")"
   if [[ -n "$value" && "$value" != "true" ]]; then
     enabled=false
   fi
