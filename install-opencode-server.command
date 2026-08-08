@@ -3,6 +3,8 @@
 
 set -euo pipefail
 
+SCRIPT_DIR="${0:A:h}"
+MENU_ICON_SOURCE_PATH="$SCRIPT_DIR/icon.png"
 LABEL="com.anomalyco.opencode-server"
 LAUNCH_AGENTS_DIR="$HOME/Library/LaunchAgents"
 PLIST_PATH="$LAUNCH_AGENTS_DIR/$LABEL.plist"
@@ -283,6 +285,11 @@ install_finder_context_menu() {
     return 1
   fi
 
+  if [[ ! -r "$MENU_ICON_SOURCE_PATH" ]]; then
+    print "Finder 메뉴 아이콘을 찾을 수 없습니다: $MENU_ICON_SOURCE_PATH"
+    return 1
+  fi
+
   build_dir="$(mktemp -d "${TMPDIR:-/tmp}/opencode-finder.XXXXXX")" || return 1
   ext_src="$build_dir/OpenCodeFinderSync.swift"
   host_src="$build_dir/OpenCodeFinderHost.swift"
@@ -329,6 +336,15 @@ final class OpenCodeFinderSync: FIFinderSync {
             action: #selector(openInOpenCode(_:)),
             keyEquivalent: ""
         )
+
+        // 설치 시 Finder 확장 번들에 복사된 아이콘을 메뉴 항목에 표시한다.
+        if let iconURL = Bundle.main.url(
+            forResource: "icon",
+            withExtension: "png"
+        ), let icon = NSImage(contentsOf: iconURL) {
+            icon.size = NSSize(width: 16, height: 16)
+            item.image = icon
+        }
 
         item.target = self
         menu.addItem(item)
@@ -732,13 +748,18 @@ FINDER_ENTITLEMENTS
     return 1
   fi
 
-  mkdir -p "$app_bundle/Contents/MacOS" "$app_bundle/Contents/PlugIns/OpenCodeFinderExtension.appex/Contents/MacOS"
+  mkdir -p "$app_bundle/Contents/MacOS" "$app_bundle/Contents/PlugIns/OpenCodeFinderExtension.appex/Contents/MacOS" "$app_bundle/Contents/PlugIns/OpenCodeFinderExtension.appex/Contents/Resources"
   cp "$host_exec" "$app_bundle/Contents/MacOS/OpenCodeFinderHost"
   cp "$extension_exec" "$app_bundle/Contents/PlugIns/OpenCodeFinderExtension.appex/Contents/MacOS/OpenCodeFinderExtension"
   cp "$host_plist" "$app_bundle/Contents/Info.plist"
   cp "$ext_plist" "$app_bundle/Contents/PlugIns/OpenCodeFinderExtension.appex/Contents/Info.plist"
+  if ! cp "$MENU_ICON_SOURCE_PATH" "$app_bundle/Contents/PlugIns/OpenCodeFinderExtension.appex/Contents/Resources/icon.png"; then
+    print "Finder 메뉴 아이콘을 앱 번들에 복사하지 못했습니다."
+    rm -rf "$build_dir"
+    return 1
+  fi
   chmod 755 "$app_bundle/Contents/MacOS/OpenCodeFinderHost" "$app_bundle/Contents/PlugIns/OpenCodeFinderExtension.appex/Contents/MacOS/OpenCodeFinderExtension"
-  chmod 644 "$app_bundle/Contents/Info.plist" "$app_bundle/Contents/PlugIns/OpenCodeFinderExtension.appex/Contents/Info.plist"
+  chmod 644 "$app_bundle/Contents/Info.plist" "$app_bundle/Contents/PlugIns/OpenCodeFinderExtension.appex/Contents/Info.plist" "$app_bundle/Contents/PlugIns/OpenCodeFinderExtension.appex/Contents/Resources/icon.png"
   plutil -lint "$app_bundle/Contents/Info.plist" >/dev/null
   plutil -lint "$app_bundle/Contents/PlugIns/OpenCodeFinderExtension.appex/Contents/Info.plist" >/dev/null
 

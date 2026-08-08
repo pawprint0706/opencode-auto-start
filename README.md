@@ -29,6 +29,7 @@ Finder에서 `install-opencode-server.command`를 더블클릭합니다.
 - 자동 업데이트 설정: `~/.config/opencode/server-settings.json`
 - 업데이트 로그: `~/Library/Logs/OpenCode/opencode-update.log`
 - Finder 우클릭 메뉴(FinderSync): `/Applications/OpenCode Finder.app` (설치 실패 시 fallback: `~/Library/Services/OpenCode에서 열기.workflow`)
+- Finder 우클릭 메뉴 아이콘 원본: `icon.png` (설치 시 Finder 확장 번들에 복사)
 - 로그: `~/Library/Logs/OpenCode/`
 
 자동 승인을 켜면 서버 래퍼가 `OPENCODE_PERMISSION={"*": "allow"}` 인라인 권한 설정을 주입해 권한 요청 없이 모든 동작을 허용합니다. `opencode` CLI의 `--auto` 플래그는 `serve`/`attach`에서는 지원되지 않는 옵션이고, attach 세션의 권한 요청은 서버(`serve` 프로세스)가 평가하므로 서버 쪽에 설정을 주입합니다. 이 때문에 자동 승인은 attach뿐 아니라 모바일/웹 등 서버에 연결되는 모든 세션에 적용됩니다. 설정은 `~/.config/opencode/server-settings.json`의 `autoApprove`에 저장됩니다.
