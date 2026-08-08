@@ -21,6 +21,10 @@ UPDATE_PATH="$BIN_DIR/opencode-update"
 SETTINGS_PATH="$CONFIG_DIR/server-settings.json"
 UPDATE_LOG_PATH="$LOG_DIR/opencode-update.log"
 COUNTER_PATH="$CONFIG_DIR/server-restart-count"
+FINDER_APP="/Applications/OpenCode Finder.app"
+FINDER_EXT_ID="com.pawprint0706.opencode.finder.extension"
+FINDER_EXT_PATH="$FINDER_APP/Contents/PlugIns/OpenCodeFinderExtension.appex"
+LSREGISTER="/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister"
 
 cleanup_service() {
   local attempt
@@ -264,6 +268,530 @@ WFLOW
   fi
 }
 
+# Finder 최상위 컨텍스트 메뉴(FinderSync 확장 + host app)를 설치한다.
+# 성공 시 0, 실패 시 1을 반환한다. 실패해도 서버 설치는 계속되어야 한다.
+#
+# Swift/plist 소스는 아래에 내장되어 있어 단독 .command 파일로도 설치할 수 있다.
+install_finder_context_menu() {
+  local build_dir \
+    ext_src host_src host_plist ext_plist entitlements \
+    extension_exec host_exec app_bundle attempt
+
+  if ! xcrun --find swiftc >/dev/null 2>&1; then
+    print "Finder 최상위 메뉴 설치에 실패했습니다: swiftc를 찾을 수 없습니다."
+    print "Apple Command Line Tools를 설치하세요: xcode-select --install"
+    return 1
+  fi
+
+  build_dir="$(mktemp -d "${TMPDIR:-/tmp}/opencode-finder.XXXXXX")" || return 1
+  ext_src="$build_dir/OpenCodeFinderSync.swift"
+  host_src="$build_dir/OpenCodeFinderHost.swift"
+  host_plist="$build_dir/OpenCodeFinderHost-Info.plist"
+  ext_plist="$build_dir/OpenCodeFinderExtension-Info.plist"
+  entitlements="$build_dir/FinderSync.entitlements"
+
+  cat > "$ext_src" <<'FINDER_SYNC_SWIFT'
+import AppKit
+import FinderSync
+
+@objc(OpenCodeFinderSync)
+final class OpenCodeFinderSync: FIFinderSync {
+
+    private let callbackScheme = "opencode-attach"
+
+    override init() {
+        super.init()
+
+        // Finder 전체 파일시스템을 대상으로 한다.
+        //
+        // /Volumes 아래 외장/네트워크 볼륨도 포함된다.
+        FIFinderSyncController.default().directoryURLs = [
+            URL(fileURLWithPath: "/", isDirectory: true)
+        ]
+    }
+
+    override func menu(for menuKind: FIMenuKind) -> NSMenu? {
+        guard menuKind == .contextualMenuForItems else {
+            return nil
+        }
+
+        let directories = selectedDirectories()
+
+        // 하나라도 file이거나 판별하지 못한 항목이면 메뉴를 노출하지 않는다.
+        guard !directories.isEmpty else {
+            return nil
+        }
+
+        let menu = NSMenu()
+
+        let item = NSMenuItem(
+            title: "OpenCode에서 열기",
+            action: #selector(openInOpenCode(_:)),
+            keyEquivalent: ""
+        )
+
+        item.target = self
+        menu.addItem(item)
+
+        return menu
+    }
+
+    @objc
+    private func openInOpenCode(_ sender: Any?) {
+        let directories = selectedDirectories()
+
+        guard !directories.isEmpty else {
+            return
+        }
+
+        var components = URLComponents()
+        components.scheme = callbackScheme
+        components.host = "open"
+
+        components.queryItems = directories.map {
+            URLQueryItem(name: "path", value: $0.path)
+        }
+
+        guard let url = components.url else {
+            NSSound.beep()
+            return
+        }
+
+        if !NSWorkspace.shared.open(url) {
+            NSSound.beep()
+        }
+    }
+
+    private func selectedDirectories() -> [URL] {
+        let controller = FIFinderSyncController.default()
+
+        // macOS 26에서는 targetedURL()이 우클릭한 항목이 아니라
+        // Finder 창이 보여주는 폴더(컨테이너)를 반환한다.
+        // 따라서 selectedItemURLs()를 우선 사용하고, 빈 경우에만
+        // target을 fallback으로 사용한다.
+        var urls = controller.selectedItemURLs() ?? []
+        if urls.isEmpty, let target = controller.targetedURL() {
+            urls = [target]
+        }
+
+        guard !urls.isEmpty else {
+            return []
+        }
+
+        var result: [URL] = []
+
+        for url in urls {
+            guard url.isFileURL else {
+                return []
+            }
+
+            guard
+                let values = try? url.resourceValues(
+                    forKeys: [.isDirectoryKey]
+                ),
+                values.isDirectory == true
+            else {
+                return []
+            }
+
+            result.append(url.standardizedFileURL)
+        }
+
+        return result
+    }
+}
+FINDER_SYNC_SWIFT
+    cat > "$host_src" <<'FINDER_HOST_SWIFT'
+import AppKit
+import Foundation
+import FinderSync
+
+final class AppDelegate: NSObject, NSApplicationDelegate {
+
+    private var handledRequest = false
+
+    func applicationDidFinishLaunching(
+        _ notification: Notification
+    ) {
+        // Finder extension의 URL 없이 사용자가 app을 직접 실행한 경우
+        // extension 관리 UI를 보여준다.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
+            if !self.handledRequest {
+                FIFinderSyncController
+                    .showExtensionManagementInterface()
+            }
+        }
+    }
+
+    func application(
+        _ application: NSApplication,
+        open urls: [URL]
+    ) {
+        handledRequest = true
+
+        let paths = urls.flatMap(parsePaths)
+
+        guard !paths.isEmpty else {
+            terminateSoon()
+            return
+        }
+
+        launchOpenCode(paths: paths)
+    }
+
+    private func parsePaths(_ url: URL) -> [String] {
+        guard url.scheme == "opencode-attach",
+              url.host == "open",
+              let components = URLComponents(
+                  url: url,
+                  resolvingAgainstBaseURL: false
+              )
+        else {
+            return []
+        }
+
+        log("received URL: \(url.absoluteString)")
+
+        var result: [String] = []
+
+        // DoS 방지용 임의 상한
+        for item in (components.queryItems ?? [])
+            .filter({ $0.name == "path" })
+            .prefix(32)
+        {
+            guard let value = item.value,
+                  value.hasPrefix("/")
+            else {
+                continue
+            }
+
+            let url = URL(
+                fileURLWithPath: value,
+                isDirectory: true
+            ).standardizedFileURL
+
+            var isDirectory: ObjCBool = false
+
+            guard FileManager.default.fileExists(
+                atPath: url.path,
+                isDirectory: &isDirectory
+            ),
+            isDirectory.boolValue
+            else {
+                continue
+            }
+
+            result.append(url.path)
+        }
+
+        return result
+    }
+
+    private func launchOpenCode(paths: [String]) {
+        let launcher =
+            FileManager.default
+                .homeDirectoryForCurrentUser
+                .appendingPathComponent(".local/bin")
+                .appendingPathComponent(
+                    "opencode-attach-launcher"
+                )
+
+        guard FileManager.default.isExecutableFile(
+            atPath: launcher.path
+        ) else {
+            log(
+                "launcher not found: \(launcher.path)"
+            )
+            terminateSoon()
+            return
+        }
+
+        let process = Process()
+        process.executableURL = launcher
+        process.arguments = paths
+
+        log("launching launcher with \(paths)")
+
+        process.terminationHandler = { [weak self] task in
+            self?.log(
+                "launcher exit: \(task.terminationStatus)"
+            )
+
+            DispatchQueue.main.async {
+                NSApp.terminate(nil)
+            }
+        }
+
+        do {
+            try process.run()
+        } catch {
+            log(
+                "launcher failed: \(error.localizedDescription)"
+            )
+
+            terminateSoon()
+        }
+    }
+
+    private func terminateSoon() {
+        DispatchQueue.main.asyncAfter(
+            deadline: .now() + 0.1
+        ) {
+            NSApp.terminate(nil)
+        }
+    }
+
+    private func log(_ text: String) {
+        let directory =
+            FileManager.default
+                .homeDirectoryForCurrentUser
+                .appendingPathComponent("Library/Logs/OpenCode")
+
+        try? FileManager.default.createDirectory(
+            at: directory,
+            withIntermediateDirectories: true
+        )
+
+        let file =
+            directory.appendingPathComponent(
+                "finder-extension.log"
+            )
+
+        let line =
+            "\(Date()) \(text)\n"
+
+        guard let data = line.data(using: .utf8) else {
+            return
+        }
+
+        if FileManager.default.fileExists(
+            atPath: file.path
+        ) {
+            guard let handle =
+                    try? FileHandle(
+                        forWritingTo: file
+                    )
+            else {
+                return
+            }
+
+            defer {
+                try? handle.close()
+            }
+
+            _ = try? handle.seekToEnd()
+            try? handle.write(
+                contentsOf: data
+            )
+        } else {
+            try? data.write(to: file)
+        }
+    }
+}
+
+@main
+struct OpenCodeFinderHost {
+    static func main() {
+        let app = NSApplication.shared
+
+        let delegate = AppDelegate()
+
+        app.delegate = delegate
+        app.setActivationPolicy(.accessory)
+        app.run()
+
+        // retain delegate while event loop runs
+        withExtendedLifetime(delegate) {}
+    }
+}
+FINDER_HOST_SWIFT
+    cat > "$host_plist" <<'FINDER_HOST_PLIST'
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC
+ "-//Apple//DTD PLIST 1.0//EN"
+ "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+
+<plist version="1.0">
+<dict>
+
+    <key>CFBundleIdentifier</key>
+    <string>com.pawprint0706.opencode.finder</string>
+
+    <key>CFBundleName</key>
+    <string>OpenCode Finder</string>
+
+    <key>CFBundleExecutable</key>
+    <string>OpenCodeFinderHost</string>
+
+    <key>CFBundlePackageType</key>
+    <string>APPL</string>
+
+    <key>CFBundleVersion</key>
+    <string>1</string>
+
+    <key>CFBundleShortVersionString</key>
+    <string>1.0</string>
+
+    <key>LSUIElement</key>
+    <true/>
+
+    <key>CFBundleURLTypes</key>
+    <array>
+        <dict>
+            <key>CFBundleURLName</key>
+            <string>OpenCode Finder</string>
+
+            <key>CFBundleURLSchemes</key>
+            <array>
+                <string>opencode-attach</string>
+            </array>
+        </dict>
+    </array>
+
+</dict>
+</plist>
+FINDER_HOST_PLIST
+    cat > "$ext_plist" <<'FINDER_EXT_PLIST'
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC
+ "-//Apple//DTD PLIST 1.0//EN"
+ "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+
+<plist version="1.0">
+<dict>
+
+    <key>CFBundleIdentifier</key>
+    <string>
+        com.pawprint0706.opencode.finder.extension
+    </string>
+
+    <key>CFBundleName</key>
+    <string>OpenCode Finder Extension</string>
+
+    <key>CFBundleExecutable</key>
+    <string>OpenCodeFinderExtension</string>
+
+    <key>CFBundlePackageType</key>
+    <string>XPC!</string>
+
+    <key>CFBundleVersion</key>
+    <string>1</string>
+
+    <key>CFBundleShortVersionString</key>
+    <string>1.0</string>
+
+    <key>CFBundleSupportedPlatforms</key>
+    <array>
+        <string>MacOSX</string>
+    </array>
+
+    <key>NSExtension</key>
+    <dict>
+        <key>NSExtensionAttributes</key>
+        <dict/>
+
+        <key>NSExtensionPointIdentifier</key>
+        <string>com.apple.FinderSync</string>
+
+        <key>NSExtensionPrincipalClass</key>
+        <string>OpenCodeFinderSync</string>
+    </dict>
+
+</dict>
+</plist>
+FINDER_EXT_PLIST
+    cat > "$entitlements" <<'FINDER_ENTITLEMENTS'
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC
+ "-//Apple//DTD PLIST 1.0//EN"
+ "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+
+<plist version="1.0">
+<dict>
+    <key>com.apple.security.app-sandbox</key>
+    <true/>
+</dict>
+</plist>
+FINDER_ENTITLEMENTS
+
+  extension_exec="$build_dir/OpenCodeFinderExtension"
+  host_exec="$build_dir/OpenCodeFinderHost"
+  app_bundle="$build_dir/OpenCode Finder.app"
+
+  if ! xcrun swiftc -O -parse-as-library -framework AppKit -framework FinderSync \
+    -Xlinker -e -Xlinker _NSExtensionMain "$ext_src" -o "$extension_exec" 2>"$build_dir/extension-build.log"; then
+    print "Finder 확장 빌드에 실패했습니다. 빌드 로그: $build_dir/extension-build.log"
+    rm -rf "$build_dir"
+    return 1
+  fi
+
+  if ! xcrun swiftc -O -parse-as-library -framework AppKit -framework FinderSync \
+    "$host_src" -o "$host_exec" 2>"$build_dir/host-build.log"; then
+    print "Finder host 앱 빌드에 실패했습니다. 빌드 로그: $build_dir/host-build.log"
+    rm -rf "$build_dir"
+    return 1
+  fi
+
+  mkdir -p "$app_bundle/Contents/MacOS" "$app_bundle/Contents/PlugIns/OpenCodeFinderExtension.appex/Contents/MacOS"
+  cp "$host_exec" "$app_bundle/Contents/MacOS/OpenCodeFinderHost"
+  cp "$extension_exec" "$app_bundle/Contents/PlugIns/OpenCodeFinderExtension.appex/Contents/MacOS/OpenCodeFinderExtension"
+  cp "$host_plist" "$app_bundle/Contents/Info.plist"
+  cp "$ext_plist" "$app_bundle/Contents/PlugIns/OpenCodeFinderExtension.appex/Contents/Info.plist"
+  chmod 755 "$app_bundle/Contents/MacOS/OpenCodeFinderHost" "$app_bundle/Contents/PlugIns/OpenCodeFinderExtension.appex/Contents/MacOS/OpenCodeFinderExtension"
+  chmod 644 "$app_bundle/Contents/Info.plist" "$app_bundle/Contents/PlugIns/OpenCodeFinderExtension.appex/Contents/Info.plist"
+  plutil -lint "$app_bundle/Contents/Info.plist" >/dev/null
+  plutil -lint "$app_bundle/Contents/PlugIns/OpenCodeFinderExtension.appex/Contents/Info.plist" >/dev/null
+
+  # 서명 순서: extension 먼저, containing app 나중.
+  if ! codesign --force --sign - --entitlements "$entitlements" "$app_bundle/Contents/PlugIns/OpenCodeFinderExtension.appex"; then
+    print "Finder 확장 서명에 실패했습니다."
+    rm -rf "$build_dir"
+    return 1
+  fi
+  if ! codesign --force --sign - "$app_bundle"; then
+    print "Finder 앱 서명에 실패했습니다."
+    rm -rf "$build_dir"
+    return 1
+  fi
+  if ! codesign --verify --deep --strict "$app_bundle"; then
+    print "Finder 앱 서명 검증에 실패했습니다."
+    rm -rf "$build_dir"
+    return 1
+  fi
+
+  # /Applications 복사만 관리자 권한으로 실행한다.
+  if [[ -d "$FINDER_APP" ]]; then
+    sudo rm -rf "$FINDER_APP" || { print "기존 Finder 앱 제거에 실패했습니다."; rm -rf "$build_dir"; return 1; }
+  fi
+  sudo ditto "$app_bundle" "$FINDER_APP" || { print "Finder 앱을 /Applications에 복사하지 못했습니다."; rm -rf "$build_dir"; return 1; }
+  rm -rf "$build_dir"
+
+  "$LSREGISTER" -f "$FINDER_APP" 2>/dev/null || true
+  pluginkit -a "$FINDER_EXT_PATH" 2>/dev/null || true
+  pluginkit -e use -i "$FINDER_EXT_ID" 2>/dev/null || true
+  killall Finder 2>/dev/null || true
+
+  for attempt in {1..10}; do
+    if pluginkit -m -i "$FINDER_EXT_ID" >/dev/null 2>&1; then
+      return 0
+    fi
+    sleep 0.3
+  done
+
+  print "Finder 확장 등록에 실패했습니다."
+  return 1
+}
+
+# FinderSync 확장과 host app을 제거한다.
+remove_finder_context_menu() {
+  pluginkit -e ignore -i "$FINDER_EXT_ID" 2>/dev/null || true
+  if [[ -d "$FINDER_APP" ]]; then
+    sudo rm -rf "$FINDER_APP" || true
+  fi
+  "$LSREGISTER" -u "$FINDER_APP" 2>/dev/null || true
+  killall Finder 2>/dev/null || true
+}
+
 install_service() {
   local opencode_bin login_path_output login_path line service_path port password confirm
 
@@ -392,10 +920,29 @@ on run argv
   set targetDir to item 2 of argv
   set commandText to quoted form of attachPath & space & quoted form of targetDir
 
-  tell application "Terminal"
-    activate
-    do script commandText
-  end tell
+  if application "Terminal" is running then
+    -- 실행 중이면 새 창에서 명령을 실행한다.
+    tell application "Terminal"
+      do script commandText
+      activate
+    end tell
+  else
+    -- 실행 중이 아니면 Terminal 실행 시 기본 빈 창이 하나 열리므로
+    -- 그 창에 명령을 실행해 빈 창이 추가로 생기지 않게 한다.
+    tell application "Terminal"
+      activate
+      repeat with i from 1 to 50
+        if (count of windows) > 0 then exit repeat
+        delay 0.1
+      end repeat
+      if (count of windows) > 0 then
+        do script commandText in front window
+      else
+        do script commandText
+      end if
+      activate
+    end tell
+  end if
 end run
 APPLESCRIPT
 done
@@ -541,7 +1088,13 @@ exit 0
 UPDATE_SCRIPT
   chmod 700 "$UPDATE_PATH"
 
-  install_quick_action
+  if install_finder_context_menu; then
+    rm -rf "$QUICK_ACTION_PATH"
+  else
+    print "Finder 최상위 메뉴 설치에 실패했습니다."
+    print "기존 Finder Service 방식으로 fallback합니다."
+    install_quick_action
+  fi
 
   printf '%s\n' \
     '<?xml version="1.0" encoding="UTF-8"?>' \
@@ -570,7 +1123,7 @@ UPDATE_SCRIPT
 
   print "OpenCode 서버를 설치하고 시작했습니다."
   print "LAN 주소: http://$(scutil --get LocalHostName 2>/dev/null || hostname).local:$port"
-  print "Finder 빠른 동작: $QUICK_ACTION_NAME (http://127.0.0.1:${port}에 attach)"
+  print "Finder 우클릭 메뉴: $QUICK_ACTION_NAME (http://127.0.0.1:${port}에 attach)"
   if setting_is_true autoUpdate; then
     print "자동 업데이트: 켜짐 (로그온 시 최신 버전으로 업데이트 후 서버 시작)"
   else
@@ -586,7 +1139,7 @@ UPDATE_SCRIPT
 
 remove_service() {
   local confirm
-  print -n "서버 등록, Finder 빠른 동작, 실행 스크립트, 저장된 비밀번호를 삭제합니다. 계속할까요? [y/N]: "
+  print -n "서버 등록, Finder 우클릭 메뉴, 실행 스크립트, 저장된 비밀번호를 삭제합니다. 계속할까요? [y/N]: "
   read -r confirm
   if [[ "${confirm:l}" != "y" && "${confirm:l}" != "yes" ]]; then
     print "취소했습니다."
@@ -596,10 +1149,11 @@ remove_service() {
   cleanup_service
   rm -f "$PLIST_PATH" "$WRAPPER_PATH" "$ATTACH_PATH" "$ATTACH_LAUNCHER_PATH" "$UPDATE_PATH" "$PASSWORD_PATH" "$SETTINGS_PATH" "$COUNTER_PATH"
   rm -rf "$QUICK_ACTION_PATH"
+  remove_finder_context_menu
   if [[ -x /System/Library/CoreServices/pbs ]]; then
     /System/Library/CoreServices/pbs -flush 2>/dev/null || true
   fi
-  print "OpenCode 서버 자동 실행과 Finder 빠른 동작을 삭제했습니다."
+  print "OpenCode 서버 자동 실행과 Finder 우클릭 메뉴를 삭제했습니다."
 }
 
 restart_service() {

@@ -15,9 +15,9 @@ Finder에서 `install-opencode-server.command`를 더블클릭합니다.
 1. `1`을 선택해 설치 또는 재설치를 진행합니다.
 2. 포트, 서버 비밀번호, 로그온 시 자동 업데이트 여부, 서버 자동 승인(모든 권한 허용) 여부를 입력합니다.
 3. 로그인 시 `launchd`가 OpenCode 서버를 자동 시작합니다.
-4. Finder에서 폴더를 우클릭한 뒤 **빠른 동작** 또는 **서비스**의 **OpenCode에서 열기**를 선택하면 Terminal에서 실행 중인 서버(`http://127.0.0.1:<포트>`)에 `attach`로 연결됩니다.
+4. Finder에서 폴더를 우클릭하면 최상위 컨텍스트 메뉴에 **OpenCode에서 열기**가 표시됩니다. 선택 시 Terminal에서 실행 중인 서버(`http://127.0.0.1:<포트>`)에 `attach`로 연결됩니다. FinderSync 확장 설치에 실패한 경우에만 **빠른 동작** 또는 **서비스** 메뉴로 fallback합니다.
 
-삭제하려면 같은 파일을 실행한 뒤 `2`를, 업데이트 및 재시작은 `3`을, 자동 업데이트 설정 변경은 `4`를, 종료는 `5`를 선택합니다. 각 작업 후에는 메뉴로 돌아가며 `5`를 선택해야 콘솔이 닫힙니다. `3`은 서버 재시작 전에 opencode를 최신 버전으로 업데이트합니다. 삭제 시 LaunchAgent·Finder 빠른 동작·래퍼·저장 비밀번호가 함께 제거됩니다. 서버가 비정상 종료되면 launchd가 최대 3회 다시 시작하며, 계속 실패하면 재시도를 중단합니다.
+삭제하려면 같은 파일을 실행한 뒤 `2`를, 업데이트 및 재시작은 `3`을, 자동 업데이트 설정 변경은 `4`를, 종료는 `5`를 선택합니다. 각 작업 후에는 메뉴로 돌아가며 `5`를 선택해야 콘솔이 닫힙니다. `3`은 서버 재시작 전에 opencode를 최신 버전으로 업데이트합니다. 삭제 시 LaunchAgent·Finder 우클릭 메뉴·래퍼·저장 비밀번호가 함께 제거됩니다. 서버가 비정상 종료되면 launchd가 최대 3회 다시 시작하며, 계속 실패하면 재시도를 중단합니다.
 
 로그온 시 서버 시작 전에 opencode를 자동 업데이트합니다(`4`로 설정을 끌 수 있음). 설치 방식(Homebrew/npm/pnpm/yarn/bun/직접 설치)을 실행 파일 경로에서 감지해 해당 패키지 매니저로 최신 버전을 설치한 뒤 새 버전으로 서버를 시작합니다. 자동 업데이트는 끄거나 켤 수 있으며, 끄면 다음 로그온부터 업데이트를 시도하지 않습니다. 업데이트 실패는 서버 시작을 막지 않고 `opencode-update.log`에만 기록됩니다.
 
@@ -28,12 +28,12 @@ Finder에서 `install-opencode-server.command`를 더블클릭합니다.
 - 자동 업데이트 스크립트: `~/.local/bin/opencode-update`
 - 자동 업데이트 설정: `~/.config/opencode/server-settings.json`
 - 업데이트 로그: `~/Library/Logs/OpenCode/opencode-update.log`
-- Finder 빠른 동작: `~/Library/Services/OpenCode에서 열기.workflow`
+- Finder 우클릭 메뉴(FinderSync): `/Applications/OpenCode Finder.app` (설치 실패 시 fallback: `~/Library/Services/OpenCode에서 열기.workflow`)
 - 로그: `~/Library/Logs/OpenCode/`
 
 자동 승인을 켜면 서버 래퍼가 `OPENCODE_PERMISSION={"*": "allow"}` 인라인 권한 설정을 주입해 권한 요청 없이 모든 동작을 허용합니다. `opencode` CLI의 `--auto` 플래그는 `serve`/`attach`에서는 지원되지 않는 옵션이고, attach 세션의 권한 요청은 서버(`serve` 프로세스)가 평가하므로 서버 쪽에 설정을 주입합니다. 이 때문에 자동 승인은 attach뿐 아니라 모바일/웹 등 서버에 연결되는 모든 세션에 적용됩니다. 설정은 `~/.config/opencode/server-settings.json`의 `autoApprove`에 저장됩니다.
 
-Finder 빠른 동작은 선택한 폴더에서 기본 `Terminal.app`을 열어 attach를 실행합니다. 처음 사용할 때 macOS가 Terminal 제어 권한을 요청할 수 있습니다. 메뉴가 보이지 않으면 **시스템 설정 > 일반 > 로그인 항목 및 확장 프로그램 > Finder**에서 빠른 동작이 활성화되어 있는지 확인하세요.
+Finder 우클릭 메뉴는 선택한 폴더에서 기본 `Terminal.app`을 열어 attach를 실행합니다. 처음 사용할 때 macOS가 Terminal 제어 권한을 요청할 수 있습니다. 메뉴가 보이지 않으면 **시스템 설정 > 일반 > 로그인 항목 및 확장 프로그램 > Finder**에서 `OpenCode Finder Extension`이 활성화되어 있는지 확인하세요.
 
 설치 시 현재 Terminal의 `PATH`를 서버 래퍼에 저장하므로, `npx`로 실행되는 MCP도 `launchd` 환경에서 찾을 수 있습니다. Node.js 버전 관리자 변경 등으로 실행 파일 경로가 바뀌면 설치 메뉴에서 `1`을 선택해 다시 설치하세요.
 

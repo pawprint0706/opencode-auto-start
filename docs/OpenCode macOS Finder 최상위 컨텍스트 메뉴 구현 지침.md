@@ -40,24 +40,47 @@ Finder가 메뉴 그룹의 정확한 위치/순서를 결정하므로 “첫 번
 for target_dir in "$@"; do
     [[ -d "$target_dir" ]] || continue
 
-    /usr/bin/osascript ...
-        tell application "Terminal"
-            activate
-            do script commandText
-        end tell
+    /usr/bin/osascript ... <<'APPLESCRIPT'
+on run argv
+  ...
+  if application "Terminal" is running then
+    tell application "Terminal"
+      do script commandText
+      activate
+    end tell
+  else
+    tell application "Terminal"
+      activate
+      repeat with i from 1 to 50
+        if (count of windows) > 0 then exit repeat
+        delay 0.1
+      end repeat
+      if (count of windows) > 0 then
+        do script commandText in front window
+      else
+        do script commandText
+      end if
+      activate
+    end tell
+  end if
+end run
+APPLESCRIPT
 done
 ```
 
 형태이므로 Finder에서 얻은 directory path만 launcher에 전달하면 된다.
 
+> **Terminal 창 2개 문제**: Terminal이 실행 중이 아닐 때 `activate`를 먼저 하면
+> Terminal 실행 시 열리는 기본 빈 창 + `do script` 새 창 = 2개가 열린다.
+> `do script`를 먼저 해도 Terminal 실행 자체가 기본 창을 열므로 동일하다.
+> 따라서 실행 여부를 확인하고, 실행 중이 아니면 Terminal이 연 기본 창에
+> `do script ... in front window`로 명령을 실행해 창이 1개만 열리게 한다.
+
 
 # 2. FinderSync Extension 추가
 
-파일:
-
-```text
-macos/finder-extension/OpenCodeFinderSync.swift
-```
+소스는 `install-opencode-server.command`에 내장되어 있어 별도 파일이 없다.
+(단일 .command 파일 배포 유지. 아래 코드가 설치 시 빌드된다.)
 
 구현 요구사항:
 
@@ -136,21 +159,13 @@ final class OpenCodeFinderSync: FIFinderSync {
     private func selectedDirectories() -> [URL] {
         let controller = FIFinderSyncController.default()
 
-        let target = controller.targetedURL()
+        // macOS 26에서는 targetedURL()이 우클릭한 항목이 아니라
+        // Finder 창이 보여주는 폴더(컨테이너)를 반환한다.
+        // 따라서 selectedItemURLs()를 우선 사용하고, 빈 경우에만
+        // target을 fallback으로 사용한다.
         var urls = controller.selectedItemURLs() ?? []
-
-        // Finder가 선택 목록과 실제 control-click 대상에 다른 값을
-        // 주는 경우 target을 우선한다.
-        if let target {
-            let normalizedTarget = target.standardizedFileURL
-
-            let containsTarget = urls.contains {
-                $0.standardizedFileURL == normalizedTarget
-            }
-
-            if !containsTarget {
-                urls = [target]
-            }
+        if urls.isEmpty, let target = controller.targetedURL() {
+            urls = [target]
         }
 
         guard !urls.isEmpty else {
@@ -187,6 +202,13 @@ final class OpenCodeFinderSync: FIFinderSync {
 
 따라서 선택 path를 global variable에 장기간 저장하지 말고 action 안에서 다시 얻는 현재 구조를 유지한다.
 
+> **macOS 26 검증 결과 (실측)**: 우클릭 시
+> `targetedURL()` = Finder 창이 보여주는 폴더(컨테이너, 예: `~/Projects`),
+> `selectedItemURLs()` = 우클릭한 폴더(예: `~/Projects/opencode-auto-start`)를 반환했다.
+> target 우선 로직은 항상 상위 폴더로 치환되는 버그를 만들므로
+> selection 우선으로 구현한다. (macOS 26.6 기준, host 로그의 URL에
+> target/selection을 실어 확인)
+
 
 # 3. extension에서 Process를 직접 실행하지 않는다
 
@@ -220,11 +242,7 @@ Process
 
 # 4. 아주 작은 host app 추가
 
-파일:
-
-```text
-macos/finder-extension/OpenCodeFinderHost.swift
-```
+소스는 `install-opencode-server.command`에 내장되어 있어 별도 파일이 없다.
 
 역할은 딱 하나다.
 
@@ -291,6 +309,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             return []
         }
 
+        log("received URL: \(url.absoluteString)")
+
         var result: [String] = []
 
         // DoS 방지용 임의 상한
@@ -348,6 +368,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let process = Process()
         process.executableURL = launcher
         process.arguments = paths
+
+        log("launching launcher with \(paths)")
 
         process.terminationHandler = { [weak self] task in
             self?.log(
@@ -654,8 +676,10 @@ xcrun swiftc \
 host:
 
 ```shell
+# @main 구조이므로 -parse-as-library가 필요하다.
 xcrun swiftc \
     -O \
+    -parse-as-library \
     -framework AppKit \
     -framework FinderSync \
     OpenCodeFinderHost.swift \

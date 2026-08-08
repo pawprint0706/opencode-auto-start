@@ -23,16 +23,27 @@ opencode-auto-start.zip으로 압축하기   ← Finder 내장(압축) 인라인
 - **서비스 서브메뉴**에는 기존 "서비스" 형식(번들 ID 있는 것)이 들어갑니다.
 - **한 워크플로가 양쪽 메뉴에 모두 나오지는 않습니다.** (아래 2장)
 
-## 2. "반디집 방식(파일 제공자)"은 참고할 수 없음
+## 2. FinderSync 확장과 반디집의 우클릭 메뉴
+
+FinderSync는 Finder contextual menu를 공식 지원합니다.
+
+```text
+FIMenuKind:
+- contextualMenuForItems      (아이템 우클릭)
+- contextualMenuForContainer  (배경 우클릭)
+- contextualMenuForSidebar    (사이드바 우클릭)
+- toolbarItemMenu             (툴바 버튼 메뉴)
+```
 
 반디집이 시스템 설정에서 "파일 제공자"로 보이는 것은 **FinderSync 확장**
 (`BandizipFinderSyncExtension.appex`, `com.apple.FinderSync` 익스텐션 포인트)입니다.
-이것은 Finder 툴바 버튼/배지/사이드바 통합용이며 **우클릭 메뉴와는 무관**합니다.
+FinderSync 확장은 툴바 버튼/배지/사이드바 통합 외에 **우클릭 컨텍스트 메뉴 항목도
+제공할 수 있으며**, 이 프로젝트의 최상위 메뉴 구현은 이 메커니즘을 사용합니다.
 
-- 우클릭 메뉴의 "반디집으로 압축하기/압축 풀기/(이름).zip·7z으로 압축하기" 항목은
+- 반디집의 우클릭 메뉴 항목("반디집으로 압축하기/압축 풀기/(이름).zip·7z으로 압축하기")은
   `Bandizip.app`의 `Info.plist` **`NSServices`**(표준 서비스 메커니즘)로 등록된 것입니다.
-- FinderSync 확장 방식은 **코드 서명된 앱 번들 + 임베디드 .appex**가 필요하고,
-  확장 자체는 우클릭 메뉴 항목을 제공하지 않으므로, 이 프로젝트(스크립트 기반 설치)에 부적합합니다.
+- 아래 3~7장의 Automator 조사는 "Service / Quick Action submenu의 차이"를 설명하는
+  **historical/fallback 섹션**입니다. FinderSync 설치가 실패했을 때만 사용됩니다.
 - "반디집으로 압축하기"가 빠른 동작 영역에 인라인으로 보이는 것은 최근 사용 기반 표시로 보이며
   (반디집 서비스 등록에는 퀵 액션 전용 플래그가 없음), 우리가 제어할 수 있는 메커니즘이 아닙니다.
 
