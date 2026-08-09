@@ -27,6 +27,8 @@ $updateScriptPath = Join-Path $binDir 'opencode-update.ps1'
 $logDir = Join-Path $env:LOCALAPPDATA 'OpenCode\Logs'
 $settingsPath = Join-Path $configDir 'server-settings.json'
 $updateLogPath = Join-Path $logDir 'opencode-update.log'
+$globalConfigDir = Join-Path $HOME '.config\opencode'
+$globalConfigPath = Join-Path $globalConfigDir 'opencode.json'
 $contextMenuRoots = @(
     'HKCU:\Software\Classes\Directory\Background\shell',
     'HKCU:\Software\Classes\Directory\shell',
@@ -317,6 +319,145 @@ function Set-AutoUpdateEnabled {
     Set-ServerSetting -Name 'autoUpdate' -Value $Enabled
 }
 
+function ConvertFrom-JsonWithComments {
+    param([string]$Json)
+
+    $withoutComments = New-Object Text.StringBuilder
+    $inString = $false
+    $escaped = $false
+    $lineComment = $false
+    $blockComment = $false
+
+    for ($index = 0; $index -lt $Json.Length; $index++) {
+        $current = $Json[$index]
+        $next = if ($index + 1 -lt $Json.Length) { $Json[$index + 1] } else { [char]0 }
+
+        if ($lineComment) {
+            if ($current -eq "`r" -or $current -eq "`n") {
+                $lineComment = $false
+                [void]$withoutComments.Append($current)
+            }
+            continue
+        }
+        if ($blockComment) {
+            if ($current -eq '*' -and $next -eq '/') {
+                $blockComment = $false
+                $index++
+            }
+            elseif ($current -eq "`r" -or $current -eq "`n") {
+                [void]$withoutComments.Append($current)
+            }
+            continue
+        }
+        if ($inString) {
+            [void]$withoutComments.Append($current)
+            if ($escaped) {
+                $escaped = $false
+            }
+            elseif ($current -eq '\') {
+                $escaped = $true
+            }
+            elseif ($current -eq '"') {
+                $inString = $false
+            }
+            continue
+        }
+        if ($current -eq '"') {
+            $inString = $true
+            [void]$withoutComments.Append($current)
+        }
+        elseif ($current -eq '/' -and $next -eq '/') {
+            $lineComment = $true
+            $index++
+        }
+        elseif ($current -eq '/' -and $next -eq '*') {
+            $blockComment = $true
+            $index++
+        }
+        else {
+            [void]$withoutComments.Append($current)
+        }
+    }
+
+    $clean = $withoutComments.ToString()
+    $withoutTrailingCommas = New-Object Text.StringBuilder
+    $inString = $false
+    $escaped = $false
+    for ($index = 0; $index -lt $clean.Length; $index++) {
+        $current = $clean[$index]
+        if ($inString) {
+            [void]$withoutTrailingCommas.Append($current)
+            if ($escaped) {
+                $escaped = $false
+            }
+            elseif ($current -eq '\') {
+                $escaped = $true
+            }
+            elseif ($current -eq '"') {
+                $inString = $false
+            }
+            continue
+        }
+        if ($current -eq '"') {
+            $inString = $true
+            [void]$withoutTrailingCommas.Append($current)
+            continue
+        }
+        if ($current -eq ',') {
+            $lookahead = $index + 1
+            while ($lookahead -lt $clean.Length -and [char]::IsWhiteSpace($clean[$lookahead])) {
+                $lookahead++
+            }
+            if ($lookahead -lt $clean.Length -and ($clean[$lookahead] -eq '}' -or $clean[$lookahead] -eq ']')) {
+                continue
+            }
+        }
+        [void]$withoutTrailingCommas.Append($current)
+    }
+
+    return ($withoutTrailingCommas.ToString() | ConvertFrom-Json)
+}
+
+function Set-GlobalSafetyPermission {
+    New-Item -ItemType Directory -Force $globalConfigDir | Out-Null
+    $config = [pscustomobject]@{}
+    if (Test-Path -LiteralPath $globalConfigPath) {
+        try {
+            $config = ConvertFrom-JsonWithComments (Get-Content -LiteralPath $globalConfigPath -Raw)
+        }
+        catch {
+            throw "The global OpenCode config could not be updated: $globalConfigPath ($($_.Exception.Message))"
+        }
+    }
+
+    if ($config.PSObject.Properties.Name -notcontains '$schema') {
+        $config | Add-Member -NotePropertyName '$schema' -NotePropertyValue 'https://opencode.ai/config.json'
+    }
+    if ($config.PSObject.Properties.Name -notcontains 'permission') {
+        $config | Add-Member -NotePropertyName 'permission' -NotePropertyValue ([pscustomobject]@{})
+    }
+    elseif ($config.permission -is [string]) {
+        $action = [string]$config.permission
+        $config.permission = [pscustomobject]@{ '*' = $action }
+    }
+
+    if ($config.permission.PSObject.Properties.Name -notcontains 'bash') {
+        $config.permission | Add-Member -NotePropertyName 'bash' -NotePropertyValue ([pscustomobject]@{})
+    }
+    elseif ($config.permission.bash -is [string]) {
+        $action = [string]$config.permission.bash
+        $config.permission.bash = [pscustomobject]@{ '*' = $action }
+    }
+
+    $config.permission.bash.PSObject.Properties.Remove('rm -rf *')
+    $config.permission.bash | Add-Member -NotePropertyName 'rm -rf *' -NotePropertyValue 'deny'
+
+    $utf8 = New-Object Text.UTF8Encoding($false)
+    $temporaryPath = "$globalConfigPath.tmp"
+    [IO.File]::WriteAllText($temporaryPath, (($config | ConvertTo-Json -Depth 100) + [Environment]::NewLine), $utf8)
+    Move-Item -LiteralPath $temporaryPath -Destination $globalConfigPath -Force
+}
+
 function Get-InstalledOpencodePath {
     if (Test-Path -LiteralPath $settingsPath) {
         try {
@@ -390,6 +531,7 @@ function Install-Service {
     $autoApprove = $autoApproveText -notmatch '^(?i:n|no)$'
     Set-ServerSetting -Name 'autoApprove' -Value $autoApprove
     Set-ServerSetting -Name 'opencodePath' -Value $opencode.Path
+    Set-GlobalSafetyPermission
 
     New-Item -ItemType Directory -Force $configDir, $binDir, $logDir | Out-Null
     Copy-Item -LiteralPath $iconSourcePath -Destination $contextMenuIconPath -Force
@@ -437,7 +579,7 @@ try {
             if (Test-Path -LiteralPath `$settingsFile) {
                 `$serverSettings = Get-Content -LiteralPath `$settingsFile -Raw | ConvertFrom-Json
                 if (`$serverSettings.PSObject.Properties.Name -contains 'autoApprove' -and (ConvertTo-BoolSetting `$serverSettings.autoApprove)) {
-                    `$env:OPENCODE_PERMISSION = '{"*": "allow"}'
+                    `$env:OPENCODE_PERMISSION = '{"*":"allow","bash":{"rm -rf *":"deny"}}'
                 }
             }
         }
@@ -736,6 +878,7 @@ exit 0
     $autoApproveValue = Get-ServerSetting -Name 'autoApprove'
     $autoApproveEnabled = ConvertTo-BoolSetting $autoApproveValue
     Write-Host ('Auto-approve (server-wide): {0}' -f $(if ($autoApproveEnabled) { 'enabled' } else { 'disabled' }))
+    Write-Host "Permanent safety rule: rm -rf * is denied in $globalConfigPath"
     Write-Host "Logs: $logDir"
     return $true
 }

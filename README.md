@@ -32,7 +32,9 @@ Finder에서 `install-opencode-server.command`를 더블클릭합니다.
 - Finder 우클릭 메뉴 아이콘 원본: `icon.png` (설치 시 Finder 확장 번들에 복사)
 - 로그: `~/Library/Logs/OpenCode/`
 
-자동 승인을 켜면 서버 래퍼가 `OPENCODE_PERMISSION={"*": "allow"}` 인라인 권한 설정을 주입해 권한 요청 없이 모든 동작을 허용합니다. `opencode` CLI의 `--auto` 플래그는 `serve`/`attach`에서는 지원되지 않는 옵션이고, attach 세션의 권한 요청은 서버(`serve` 프로세스)가 평가하므로 서버 쪽에 설정을 주입합니다. 이 때문에 자동 승인은 attach뿐 아니라 모바일/웹 등 서버에 연결되는 모든 세션에 적용됩니다. 설정은 `~/.config/opencode/server-settings.json`의 `autoApprove`에 저장됩니다.
+자동 승인을 켜면 서버 래퍼가 모든 권한을 허용하되 `rm -rf *`만 명시적으로 거절하는 `OPENCODE_PERMISSION` 인라인 권한 설정을 주입합니다. `opencode` CLI의 `--auto` 플래그는 `serve`/`attach`에서는 지원되지 않는 옵션이고, attach 세션의 권한 요청은 서버(`serve` 프로세스)가 평가하므로 서버 쪽에 설정을 주입합니다. 이 때문에 자동 승인은 attach뿐 아니라 모바일/웹 등 서버에 연결되는 모든 세션에 적용됩니다. 설정은 `~/.config/opencode/server-settings.json`의 `autoApprove`에 저장됩니다.
+
+설치 또는 재설치 시 `~/.config/opencode/opencode.json`의 기존 설정을 보존하면서 `permission.bash` 마지막에 `"rm -rf *": "deny"`를 병합합니다. 이 전역 안전 규칙은 OpenCode auto 모드에서도 명시적 deny로 유지되며, 서버 제거 후에도 삭제하지 않습니다.
 
 Finder 우클릭 메뉴는 선택한 폴더에서 기본 `Terminal.app`을 열어 attach를 실행합니다. 처음 사용할 때 macOS가 Terminal 제어 권한을 요청할 수 있습니다. 메뉴가 보이지 않으면 **시스템 설정 > 일반 > 로그인 항목 및 확장 프로그램 > Finder**에서 `OpenCode Finder Extension`이 활성화되어 있는지 확인하세요.
 
@@ -64,7 +66,9 @@ Explorer에서 `install-opencode-server.bat`를 더블클릭합니다. 작업 �
 
 우클릭 메뉴는 레지스트리에 비밀번호를 넣지 않습니다. attach 래퍼가 스케줄러와 동일한 DPAPI 비밀번호 파일을 읽어 `OPENCODE_SERVER_PASSWORD`로 전달합니다.
 
-자동 승인을 켜면 서버 래퍼가 `OPENCODE_PERMISSION={"*": "allow"}` 인라인 권한 설정을 주입해 권한 요청 없이 모든 동작을 허용합니다. `opencode` CLI의 `--auto` 플래그는 `serve`/`attach`에서는 지원되지 않는 옵션이고, attach 세션의 권한 요청은 서버(`serve` 프로세스)가 평가하므로 서버 쪽에 설정을 주입합니다. 이 때문에 자동 승인은 attach뿐 아니라 모바일/웹 등 서버에 연결되는 모든 세션에 적용됩니다. 설정은 `%LOCALAPPDATA%\OpenCode\server-settings.json`의 `autoApprove`에 저장됩니다.
+자동 승인을 켜면 서버 래퍼가 모든 권한을 허용하되 `rm -rf *`만 명시적으로 거절하는 `OPENCODE_PERMISSION` 인라인 권한 설정을 주입합니다. `opencode` CLI의 `--auto` 플래그는 `serve`/`attach`에서는 지원되지 않는 옵션이고, attach 세션의 권한 요청은 서버(`serve` 프로세스)가 평가하므로 서버 쪽에 설정을 주입합니다. 이 때문에 자동 승인은 attach뿐 아니라 모바일/웹 등 서버에 연결되는 모든 세션에 적용됩니다. 설정은 `%LOCALAPPDATA%\OpenCode\server-settings.json`의 `autoApprove`에 저장됩니다.
+
+설치 또는 재설치 시 `%USERPROFILE%\.config\opencode\opencode.json`의 기존 설정을 보존하면서 `permission.bash` 마지막에 `"rm -rf *": "deny"`를 병합합니다. 이 전역 안전 규칙은 OpenCode auto 모드에서도 명시적 deny로 유지되며, 서버 제거 후에도 삭제하지 않습니다.
 
 동작 요약:
 

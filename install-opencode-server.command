@@ -13,6 +13,7 @@ WRAPPER_PATH="$BIN_DIR/opencode-server"
 ATTACH_PATH="$BIN_DIR/opencode-attach"
 ATTACH_LAUNCHER_PATH="$BIN_DIR/opencode-attach-launcher"
 CONFIG_DIR="$HOME/.config/opencode"
+GLOBAL_CONFIG_PATH="$CONFIG_DIR/opencode.json"
 PASSWORD_PATH="$CONFIG_DIR/server-password"
 LOG_DIR="$HOME/Library/Logs/OpenCode"
 SERVICES_DIR="$HOME/Library/Services"
@@ -116,6 +117,117 @@ setting_is_true() {
     [[ "$value" == "true" ]] && return 0
   fi
   return 1
+}
+
+install_global_safety_permission() {
+  mkdir -p "$CONFIG_DIR"
+  umask 077
+  /usr/bin/osascript -l JavaScript - "$GLOBAL_CONFIG_PATH" <<'JXA'
+ObjC.import('Foundation')
+
+function parseJsonWithComments(text) {
+  let output = ''
+  let inString = false
+  let escaped = false
+  let lineComment = false
+  let blockComment = false
+
+  for (let index = 0; index < text.length; index++) {
+    const current = text[index]
+    const next = text[index + 1] || ''
+    if (lineComment) {
+      if (current === '\r' || current === '\n') {
+        lineComment = false
+        output += current
+      }
+      continue
+    }
+    if (blockComment) {
+      if (current === '*' && next === '/') {
+        blockComment = false
+        index++
+      } else if (current === '\r' || current === '\n') {
+        output += current
+      }
+      continue
+    }
+    if (inString) {
+      output += current
+      if (escaped) escaped = false
+      else if (current === '\\') escaped = true
+      else if (current === '"') inString = false
+      continue
+    }
+    if (current === '"') {
+      inString = true
+      output += current
+    } else if (current === '/' && next === '/') {
+      lineComment = true
+      index++
+    } else if (current === '/' && next === '*') {
+      blockComment = true
+      index++
+    } else {
+      output += current
+    }
+  }
+
+  let clean = ''
+  inString = false
+  escaped = false
+  for (let index = 0; index < output.length; index++) {
+    const current = output[index]
+    if (inString) {
+      clean += current
+      if (escaped) escaped = false
+      else if (current === '\\') escaped = true
+      else if (current === '"') inString = false
+      continue
+    }
+    if (current === '"') {
+      inString = true
+      clean += current
+      continue
+    }
+    if (current === ',') {
+      let lookahead = index + 1
+      while (lookahead < output.length && /\s/.test(output[lookahead])) lookahead++
+      if (output[lookahead] === '}' || output[lookahead] === ']') continue
+    }
+    clean += current
+  }
+  return JSON.parse(clean)
+}
+
+function run(argv) {
+  const path = argv[0]
+  const manager = $.NSFileManager.defaultManager
+  let config = {}
+  if (manager.fileExistsAtPath(path)) {
+    const text = ObjC.unwrap($.NSString.stringWithContentsOfFileEncodingError(
+      path,
+      $.NSUTF8StringEncoding,
+      null
+    ))
+    config = parseJsonWithComments(text)
+  }
+
+  if (!config.$schema) config.$schema = 'https://opencode.ai/config.json'
+  if (typeof config.permission === 'string') config.permission = {'*': config.permission}
+  else if (!config.permission) config.permission = {}
+  if (typeof config.permission.bash === 'string') config.permission.bash = {'*': config.permission.bash}
+  else if (!config.permission.bash) config.permission.bash = {}
+
+  delete config.permission.bash['rm -rf *']
+  config.permission.bash['rm -rf *'] = 'deny'
+
+  const output = $(JSON.stringify(config, null, 2) + '\n')
+  if (!output.writeToFileAtomicallyEncodingError(path, true, $.NSUTF8StringEncoding, null)) {
+    throw new Error('Failed to write global OpenCode config: ' + path)
+  }
+}
+JXA
+  chmod 600 "$GLOBAL_CONFIG_PATH"
 }
 
 install_quick_action() {
@@ -878,6 +990,7 @@ install_service() {
     write_setting autoApprove true
   fi
   write_setting opencodePath "$opencode_bin"
+  install_global_safety_permission
 
   mkdir -p "$LAUNCH_AGENTS_DIR" "$BIN_DIR" "$LOG_DIR" "$SERVICES_DIR"
 
@@ -902,7 +1015,7 @@ install_service() {
     'export OPENCODE_SERVER_PASSWORD="$(< "$password_file")"' \
     'settings_file="$HOME/.config/opencode/server-settings.json"' \
     'if [[ -f "$settings_file" ]] && [[ "$(sed -nE '\''s/.*"autoApprove"[[:space:]]*:[[:space:]]*(true|false).*/\1/p'\'' "$settings_file" 2>/dev/null | head -n 1)" == "true" ]]; then' \
-    '  export OPENCODE_PERMISSION="{\"*\": \"allow\"}"' \
+    '  export OPENCODE_PERMISSION="{\"*\":\"allow\",\"bash\":{\"rm -rf *\":\"deny\"}}"' \
     'fi' \
     'update_script="$HOME/.local/bin/opencode-update"' \
     'if [[ -x "$update_script" ]]; then' \
@@ -1155,6 +1268,7 @@ UPDATE_SCRIPT
   else
     print "자동 승인: 꺼짐"
   fi
+  print "영구 안전 규칙: rm -rf * 명령 거절 ($GLOBAL_CONFIG_PATH)"
   print "상태 확인: launchctl print $SERVICE_TARGET"
 }
 
