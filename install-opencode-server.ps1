@@ -29,6 +29,47 @@ $settingsPath = Join-Path $configDir 'server-settings.json'
 $updateLogPath = Join-Path $logDir 'opencode-update.log'
 $globalConfigDir = Join-Path $HOME '.config\opencode'
 $globalConfigPath = Join-Path $globalConfigDir 'opencode.json'
+$destructiveCommandPatterns = @(
+    'rm -rf *',
+    'rm -fr *',
+    'rm *-?*f*',
+    'rm *-f*?*',
+    'sudo rm *-?*f*',
+    'sudo rm *-f*?*',
+    'find *-delete*',
+    'sudo find *-delete*',
+    '?emove-?tem *-?ecursive*',
+    'rm *-?ecursive*',
+    'rm *--recursive*',
+    'sudo rm *--recursive*',
+    'del */?*',
+    'erase */?*',
+    'rd */?*',
+    'rmdir */?*',
+    'git clean *-f*d*',
+    'git clean *-d*f*',
+    'diskutil eraseDisk *',
+    'diskutil eraseVolume *',
+    'diskutil zeroDisk *',
+    'diskutil secureErase *',
+    'diskutil partitionDisk *',
+    'sudo diskutil eraseDisk *',
+    'sudo diskutil eraseVolume *',
+    'sudo diskutil zeroDisk *',
+    'sudo diskutil secureErase *',
+    'sudo diskutil partitionDisk *',
+    'mkfs *',
+    'sudo mkfs *',
+    'newfs *',
+    'sudo newfs *',
+    'dd *of=/dev/*',
+    'sudo dd *of=/dev/*',
+    '?lear-?isk *',
+    '?ormat-?olume *',
+    '?nitialize-?isk *',
+    'format *',
+    'diskpart *'
+)
 $contextMenuRoots = @(
     'HKCU:\Software\Classes\Directory\Background\shell',
     'HKCU:\Software\Classes\Directory\shell',
@@ -449,8 +490,10 @@ function Set-GlobalSafetyPermission {
         $config.permission.bash = [pscustomobject]@{ '*' = $action }
     }
 
-    $config.permission.bash.PSObject.Properties.Remove('rm -rf *')
-    $config.permission.bash | Add-Member -NotePropertyName 'rm -rf *' -NotePropertyValue 'deny'
+    foreach ($pattern in $destructiveCommandPatterns) {
+        $config.permission.bash.PSObject.Properties.Remove($pattern)
+        $config.permission.bash | Add-Member -NotePropertyName $pattern -NotePropertyValue 'deny'
+    }
 
     $utf8 = New-Object Text.UTF8Encoding($false)
     $temporaryPath = "$globalConfigPath.tmp"
@@ -541,6 +584,11 @@ function Install-Service {
     $escapedErrLog = (Join-Path $logDir 'opencode-server.err.log').Replace("'", "''")
     $escapedUpdateScript = $updateScriptPath.Replace("'", "''")
     $escapedSettingsPath = $settingsPath.Replace("'", "''")
+    $autoApprovePermission = [ordered]@{ '*' = 'allow'; bash = [ordered]@{} }
+    foreach ($pattern in $destructiveCommandPatterns) {
+        $autoApprovePermission['bash'][$pattern] = 'deny'
+    }
+    $escapedAutoApprovePermission = (($autoApprovePermission | ConvertTo-Json -Compress).Replace("'", "''"))
     $wrapper = @"
 `$ErrorActionPreference = 'Stop'
 `$passwordFile = '$escapedPasswordPath'
@@ -579,7 +627,7 @@ try {
             if (Test-Path -LiteralPath `$settingsFile) {
                 `$serverSettings = Get-Content -LiteralPath `$settingsFile -Raw | ConvertFrom-Json
                 if (`$serverSettings.PSObject.Properties.Name -contains 'autoApprove' -and (ConvertTo-BoolSetting `$serverSettings.autoApprove)) {
-                    `$env:OPENCODE_PERMISSION = '{"*":"allow","bash":{"rm -rf *":"deny"}}'
+                    `$env:OPENCODE_PERMISSION = '$escapedAutoApprovePermission'
                 }
             }
         }
@@ -878,7 +926,7 @@ exit 0
     $autoApproveValue = Get-ServerSetting -Name 'autoApprove'
     $autoApproveEnabled = ConvertTo-BoolSetting $autoApproveValue
     Write-Host ('Auto-approve (server-wide): {0}' -f $(if ($autoApproveEnabled) { 'enabled' } else { 'disabled' }))
-    Write-Host "Permanent safety rule: rm -rf * is denied in $globalConfigPath"
+    Write-Host "Permanent safety rules: recursive deletion and disk erase commands are denied in $globalConfigPath"
     Write-Host "Logs: $logDir"
     return $true
 }

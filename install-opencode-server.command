@@ -28,6 +28,47 @@ FINDER_APP="/Applications/OpenCode Finder.app"
 FINDER_EXT_ID="com.pawprint0706.opencode.finder.extension"
 FINDER_EXT_PATH="$FINDER_APP/Contents/PlugIns/OpenCodeFinderExtension.appex"
 LSREGISTER="/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister"
+DESTRUCTIVE_COMMAND_PATTERNS=(
+  'rm -rf *'
+  'rm -fr *'
+  'rm *-?*f*'
+  'rm *-f*?*'
+  'sudo rm *-?*f*'
+  'sudo rm *-f*?*'
+  'find *-delete*'
+  'sudo find *-delete*'
+  '?emove-?tem *-?ecursive*'
+  'rm *-?ecursive*'
+  'rm *--recursive*'
+  'sudo rm *--recursive*'
+  'del */?*'
+  'erase */?*'
+  'rd */?*'
+  'rmdir */?*'
+  'git clean *-f*d*'
+  'git clean *-d*f*'
+  'diskutil eraseDisk *'
+  'diskutil eraseVolume *'
+  'diskutil zeroDisk *'
+  'diskutil secureErase *'
+  'diskutil partitionDisk *'
+  'sudo diskutil eraseDisk *'
+  'sudo diskutil eraseVolume *'
+  'sudo diskutil zeroDisk *'
+  'sudo diskutil secureErase *'
+  'sudo diskutil partitionDisk *'
+  'mkfs *'
+  'sudo mkfs *'
+  'newfs *'
+  'sudo newfs *'
+  'dd *of=/dev/*'
+  'sudo dd *of=/dev/*'
+  '?lear-?isk *'
+  '?ormat-?olume *'
+  '?nitialize-?isk *'
+  'format *'
+  'diskpart *'
+)
 
 cleanup_service() {
   local attempt
@@ -58,6 +99,15 @@ json_escape() {
   s="${s//\\/\\\\}"
   s="${s//\"/\\\"}"
   print -r -- "$s"
+}
+
+build_auto_approve_permission() {
+  local pattern separator="" output='{"*":"allow","bash":{'
+  for pattern in "${DESTRUCTIVE_COMMAND_PATTERNS[@]}"; do
+    output+="${separator}\"$(json_escape "$pattern")\":\"deny\""
+    separator=","
+  done
+  print -r -- "${output}}}"
 }
 
 # Returns the raw JSON value (true/false or a quoted string) for a key, or empty.
@@ -122,7 +172,7 @@ setting_is_true() {
 install_global_safety_permission() {
   mkdir -p "$CONFIG_DIR"
   umask 077
-  /usr/bin/osascript -l JavaScript - "$GLOBAL_CONFIG_PATH" <<'JXA'
+  /usr/bin/osascript -l JavaScript - "$GLOBAL_CONFIG_PATH" "${DESTRUCTIVE_COMMAND_PATTERNS[@]}" <<'JXA'
 ObjC.import('Foundation')
 
 function parseJsonWithComments(text) {
@@ -201,6 +251,7 @@ function parseJsonWithComments(text) {
 
 function run(argv) {
   const path = argv[0]
+  const patterns = argv.slice(1)
   const manager = $.NSFileManager.defaultManager
   let config = {}
   if (manager.fileExistsAtPath(path)) {
@@ -218,8 +269,8 @@ function run(argv) {
   if (typeof config.permission.bash === 'string') config.permission.bash = {'*': config.permission.bash}
   else if (!config.permission.bash) config.permission.bash = {}
 
-  delete config.permission.bash['rm -rf *']
-  config.permission.bash['rm -rf *'] = 'deny'
+  for (const pattern of patterns) delete config.permission.bash[pattern]
+  for (const pattern of patterns) config.permission.bash[pattern] = 'deny'
 
   const output = $(JSON.stringify(config, null, 2) + '\n')
   if (!output.writeToFileAtomicallyEncodingError(path, true, $.NSUTF8StringEncoding, null)) {
@@ -926,7 +977,7 @@ remove_finder_context_menu() {
 }
 
 install_service() {
-  local opencode_bin login_path_output login_path line service_path port password confirm
+  local opencode_bin login_path_output login_path line service_path port password confirm auto_approve_permission
 
   opencode_bin="$(find_opencode)"
   if [[ -z "$opencode_bin" ]]; then
@@ -991,6 +1042,7 @@ install_service() {
   fi
   write_setting opencodePath "$opencode_bin"
   install_global_safety_permission
+  auto_approve_permission="$(build_auto_approve_permission)"
 
   mkdir -p "$LAUNCH_AGENTS_DIR" "$BIN_DIR" "$LOG_DIR" "$SERVICES_DIR"
 
@@ -1015,7 +1067,7 @@ install_service() {
     'export OPENCODE_SERVER_PASSWORD="$(< "$password_file")"' \
     'settings_file="$HOME/.config/opencode/server-settings.json"' \
     'if [[ -f "$settings_file" ]] && [[ "$(sed -nE '\''s/.*"autoApprove"[[:space:]]*:[[:space:]]*(true|false).*/\1/p'\'' "$settings_file" 2>/dev/null | head -n 1)" == "true" ]]; then' \
-    '  export OPENCODE_PERMISSION="{\"*\":\"allow\",\"bash\":{\"rm -rf *\":\"deny\"}}"' \
+    "  export OPENCODE_PERMISSION=${(q)auto_approve_permission}" \
     'fi' \
     'update_script="$HOME/.local/bin/opencode-update"' \
     'if [[ -x "$update_script" ]]; then' \
@@ -1268,7 +1320,7 @@ UPDATE_SCRIPT
   else
     print "자동 승인: 꺼짐"
   fi
-  print "영구 안전 규칙: rm -rf * 명령 거절 ($GLOBAL_CONFIG_PATH)"
+  print "영구 안전 규칙: 재귀 전체 삭제 및 디스크 초기화 명령 거절 ($GLOBAL_CONFIG_PATH)"
   print "상태 확인: launchctl print $SERVICE_TARGET"
 }
 
