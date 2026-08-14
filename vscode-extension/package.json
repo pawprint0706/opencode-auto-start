@@ -1,0 +1,46 @@
+{
+  "name": "opencode-open",
+  "displayName": "OpenCode에서 열기",
+  "description": "VS Code 통합 터미널에서 실행 중인 OpenCode 서버에 attach합니다.",
+  "version": "0.0.1",
+  "publisher": "opencode-auto-start",
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "main": "./out/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "opencode.open",
+        "title": "OpenCode에서 열기",
+        "icon": "$(terminal)"
+      }
+    ],
+    "menus": {
+      "explorer/context": [
+        {
+          "command": "opencode.open",
+          "when": "resourceScheme == file",
+          "group": "navigation@100"
+        }
+      ]
+    }
+  },
+  "scripts": {
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./",
+    "package": "npm run compile && vsce package --allow-missing-repository --skip-license"
+  },
+  "devDependencies": {
+    "@types/node": "^20.14.0",
+    "@types/vscode": "^1.85.0",
+    "@vscode/vsce": "^3.4.0",
+    "typescript": "^5.5.0"
+  }
+}
